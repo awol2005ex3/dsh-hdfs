@@ -1,0 +1,14 @@
+# dsh-hdfs 的 bundle 层 patch：把 Node 半插件注册进配置树。
+#
+# Node 半：loader.import('dsh-hdfs') 解析到 lib/index.js，
+#   - 加载 rust/ 构建出的 napi 原生模块（lib/native/index.node）；
+#   - 注册 /api/hdfs/* 精确 Fetch 路由（connection.fetch.register）；
+#   - 注册 hdfs_* agent 工具（ctx.tools.register）。
+# 浏览器半：client-modules 扫描到本包的 dsh.client 声明后，经
+# /plugins/dsh-hdfs/client.js 提供 lib/client.js，浏览器 shell 为同一行名
+# 创建 fiber 并物化客户端模块，挂载 HDFS 文件浏览器面板。
+#
+# 注意：patch 按 id 整体替换 config，不会深合并。改本文件请保留整行。
+- insert:
+    - id: hdfs
+      name: dsh-hdfs

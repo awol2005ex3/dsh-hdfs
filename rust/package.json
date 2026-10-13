@@ -1,0 +1,9 @@
+{
+  "name": "dsh-hdfs-native",
+  "version": "0.1.0",
+  "description": "napi-rs native addon exposing hdfs-native to the dsh-hdfs plugin",
+  "license": "Apache-2.0",
+  "napi": {
+    "binaryName": "dsh-hdfs-native"
+  }
+}

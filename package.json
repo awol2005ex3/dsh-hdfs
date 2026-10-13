@@ -1,0 +1,78 @@
+{
+  "name": "dsh-hdfs",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness (dsh) plugin: browse and operate HDFS clusters (HA / Kerberos) through a Rust napi-rs native addon, with a Web client half and agent tools.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./native": {
+      "types": "./lib/native.d.ts",
+      "default": "./lib/native.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "AGENTS.md"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "build:native": "cd rust && napi build --release --platform --js index.cjs --output ../lib/native",
+    "build:native:debug": "cd rust && napi build --platform --js index.cjs --output ../lib/native",
+    "build": "tsc -p tsconfig.json && node scripts/wrap-client.mjs",
+    "typecheck": "tsc --noEmit",
+    "check:native": "node scripts/check-native.mjs",
+    "check:plugin": "npm run build && node scripts/check-plugin.mjs",
+    "check:rpc": "npm run build && node scripts/check-rpc.mjs",
+    "check": "npm run check:native && npm run check:plugin && npm run check:rpc",
+    "test": "npm run check"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "hdfs",
+    "kerberos",
+    "rust",
+    "napi"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@napi-rs/cli": "^3.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  }
+}

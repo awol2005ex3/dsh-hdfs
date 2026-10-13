@@ -1,0 +1,19 @@
+node_modules/
+lib/
+*.log
+.DS_Store
+.workbuddy
+.opencode
+.trae
+.soloncode
+
+# Rust native addon
+rust/target/
+rust/index.node
+rust/*.dll
+rust/*.pdb
+rust/*.exp
+rust/*.lib
+rust/ccache/
+hdfs_ccache
+*.ccache

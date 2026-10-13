@@ -1,0 +1,7 @@
+{
+  "$schema": "https://raw.githubusercontent.com/napi-rs/napi-rs/main/napi.json",
+  "package": {
+    "name": "dsh-hdfs-native"
+  },
+  "binaryName": "dsh-hdfs-native"
+}

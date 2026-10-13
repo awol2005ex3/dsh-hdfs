@@ -1,0 +1,35 @@
+[package]
+name = "dsh-hdfs-native"
+version = "0.1.0"
+edition = "2021"
+description = "napi-rs native addon exposing hdfs-native to the dsh-hdfs plugin"
+license = "Apache-2.0"
+
+[lib]
+name = "dsh_hdfs_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", features = ["napi8", "tokio_rt"] }
+napi-derive = { version = "3" }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+bytes = "1"
+hdfs-native = "0.11.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Kerberos: 纯 Rust 实现，免 MIT kinit / 系统 gssapi。
+# hdfs-native 的 SASL/GSS 走 libloading 加载 libgssapi_krb5（Windows 上找不到），
+# 因此这里用 kerbeiros 直接取 TGT 并写 ccache，再让 hdfs-native 从 ccache 读取凭证。
+kerberos-asn1 = { version = "0.4.2", package = "awol2005ex3-kerberos-asn1" }
+kerberos-crypto = { version = "0.4.1", package = "awol2005ex3-kerberos-crypto" }
+kerberos-ccache = { version = "0.4.1", package = "awol2005ex3-kerberos-ccache" }
+kerberos-keytab = { version = "0.4.1", package = "awol2005ex3-kerberos-keytab" }
+kerbeiros = { version = "0.4.1", package = "awol2005ex3-kerbeiros" }
+kinit-kt = { version = "0.1.0", package = "awol2005ex3-kinit-kt" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
