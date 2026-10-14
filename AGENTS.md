@@ -116,3 +116,23 @@ hdfs version / clusters / kerberosLogin / ping / list / read / ...
 - 测试集群配置写在 `C:\Users\Administrator\.dsh\profiles\web\cordis.patch.yml`
   （运行时配置，**不是代码**，可按需删）。仓库侧对应文件 `.e2e-cluster.local.json` 已 gitignore。
 - Kerberos SASL/GSS 在本机可用：hdfs-native 经 libloading 找到了系统 gssapi 动态库。
+
+### ⚠ kerberosStatus 的虚假健康信号（2026-10-14 下午，血泪）
+
+`kerberosStatus` 只检查 **ccache 文件存在且非空**，不验证 TGT 是否有效。宿主重启后：
+磁盘上的 ccache 还在（`ok:true`），但 TGT 是进程级取的、已随旧进程失效 → 第一次
+`list` 报 `GSS_S_BAD_MECH`。**表现为「状态说 ok，操作全失败」。**
+
+排查顺序（别再去翻 GSS 库）：
+1. `kerberosStatus` 看 ccachePath 是不是 `C:\Users\...\dsh_hdfs_ccache`（`API:krb5cc` = 旧 .node）
+2. **直接 `kerberosLogin` 重登**，再重试操作——90% 的"GSS 坏了"其实是票据过期
+3. 重登后仍失败才考虑 gssapi_krb5.dll / 网络 / KDC
+
+面板已加两层防护：打开时对 Kerberos 集群自动登录一次（`ensureKerberos`）；
+GSS 失败时登录按钮变红提示重登。
+
+### npm 脚本的 napi 选项名
+
+`build:native` 曾误用 `--output`，napi v3 只认 `--output-dir`（`-o`），报
+`Unsupported option name`。手动全路径命令能跑通不代表 npm 脚本没问题——
+发布前务必实跑一次 `npm run build:native`。

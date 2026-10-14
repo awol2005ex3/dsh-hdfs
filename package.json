@@ -31,8 +31,8 @@
     "node": ">=22.14.0"
   },
   "scripts": {
-    "build:native": "cd rust && napi build --release --platform --js index.cjs --output ../lib/native",
-    "build:native:debug": "cd rust && napi build --platform --js index.cjs --output ../lib/native",
+    "build:native": "cd rust && napi build --release --platform --js index.cjs --output-dir ../lib/native",
+    "build:native:debug": "cd rust && napi build --platform --js index.cjs --output-dir ../lib/native",
     "build": "tsc -p tsconfig.json && node scripts/wrap-client.mjs",
     "typecheck": "tsc --noEmit",
     "check:native": "node scripts/check-native.mjs",

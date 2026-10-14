@@ -353,6 +353,8 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     try {
       const value = (await callRpc(rpcConn, 'kerberosLogin', { cluster: id })) as { principal: string; ccachePath: string; message: string }
       setStatus(`✔ Kerberos 登录成功：${value.principal} → ${value.ccachePath}`)
+      krbLoginBtn.textContent = '🔑 Kerberos 登录'
+      krbLoginBtn.setAttribute('style', BTN_CSS)
       void krbStatusCheck()
     } catch (err) {
       setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
@@ -376,7 +378,15 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setStatus(`✘ ${message}`, true)
-      if (/Kerberos|GSS|SASL|tgt|ccache/i.test(message)) void krbStatusCheck()
+      // GSS/票据类失败：ccache 文件在磁盘上但 TGT 可能已过期（kerberosStatus 只看文件存在，
+      // 会给虚假健康信号）。刷新状态并明确引导用户重新登录。
+      if (/GSS|Kerberos|SASL|tgt|ccache|BAD_MECH/i.test(message)) {
+        void krbStatusCheck()
+        if (krbLoginBtn) {
+          krbLoginBtn.textContent = '🔑 Kerberos 票据可能已过期，点此重新登录'
+          krbLoginBtn.setAttribute('style', BTN_CSS + 'border-color:#cf222e;color:#cf222e;')
+        }
+      }
     }
   }
 
@@ -463,6 +473,13 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     }
   }
 
+  /**
+   * 面板打开/刷新时的初始化。
+   *
+   * Kerberos 集群在此自动登录一次：ccache 文件在宿主重启后仍在磁盘上，
+   * kerberosStatus 只看文件存在（会给虚假 ok），而 TGT 实际已随进程失效——
+   * 不预登录的话面板一打开就是一片 GSS 报错。
+   */
   async function refreshAll(): Promise<void> {
     try {
       await loadClusters()
@@ -474,9 +491,40 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       } catch {
         // 读通道不可用不阻断浏览：集群下拉由 clusters 端点单独填充
       }
+      await ensureKerberos()
       await browse(currentPath)
     } catch (err) {
       setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
+    }
+  }
+
+  /** 当前集群配了 principal+keytab 时，静默登录一次（失败不阻断，browse 会报真实错）。 */
+  async function ensureKerberos(): Promise<void> {
+    const raw = clustersInput.value.trim() || '[]'
+    let list: Array<Record<string, unknown>> = []
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) list = parsed as Array<Record<string, unknown>>
+    } catch {
+      return
+    }
+    const id = activeCluster()
+    const cluster = list.find((c) => c?.id === id)
+    if (!cluster) return
+    let extra: Record<string, unknown> = {}
+    try {
+      const parsedExtra = typeof cluster.extraConfig === 'string' ? JSON.parse(cluster.extraConfig) : cluster.extraConfig
+      if (parsedExtra && typeof parsedExtra === 'object') extra = parsedExtra as Record<string, unknown>
+    } catch {
+      return
+    }
+    const hasKrb = Boolean(extra['dfs.namenode.kerberos.principal'] && extra['dfs.namenode.keytab.file'])
+    if (!hasKrb) return
+    try {
+      await callRpc(rpcConn, 'kerberosLogin', { cluster: id })
+      await krbStatusCheck()
+    } catch {
+      // 登录失败留给 browse 报错；这里不叠加噪音
     }
   }
 
