@@ -15,13 +15,17 @@ use std::path::PathBuf;
 const CCACHE_NAME: &str = "dsh_hdfs_ccache";
 
 /// 解析出 ccache 的目标路径。
+///
+/// 环境变量 `KRB5CCNAME` 只在 `FILE:` 形态下被沿用：Windows 上它常被其他工具
+/// （JDK / MIT KFW / Hadoop 客户端）设成 `API:krb5cc` 这类非文件型 ccache 名，
+/// hdfs-native 经系统 GSS 库解析不了它——照抄只会把凭据写进谁也读不到的地方
+/// （`API:krb5cc` 在 NTFS 上还是文件 `API` 的备用数据流）。因此一律退到本插件
+/// 自己的固定文件路径，保证 ccache 落点确定、可被系统 GSS 读取。
 fn ccache_path() -> PathBuf {
-    // 优先沿用环境变量已声明的路径，便于用户自行指定
     if let Ok(existing) = std::env::var("KRB5CCNAME") {
         let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            // FILE: 前缀是 MIT 约定，剥掉后当普通路径用
-            let bare = trimmed.strip_prefix("FILE:").unwrap_or(trimmed);
+        if let Some(bare) = trimmed.strip_prefix("FILE:") {
+            let bare = bare.trim();
             if !bare.is_empty() {
                 return PathBuf::from(bare);
             }

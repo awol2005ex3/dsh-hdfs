@@ -130,6 +130,7 @@ interface SettingsChannel {
   write(patch: Record<string, unknown>): Promise<void>
 }
 
+/** 退路通道：宿主 /api/hdfs/clusters 只读快照（宿主不落盘，写操作不可用）。 */
 function rpcSettingsChannel(conn: any): SettingsChannel | undefined {
   if (!conn || !conn.rpc || typeof conn.rpc.call !== 'function') return undefined
   return {
@@ -138,9 +139,8 @@ function rpcSettingsChannel(conn: any): SettingsChannel | undefined {
       // host 端只回解析后的集群清单；编辑器需要原始 JSON —— 由面板自行序列化
       return { clusters: JSON.stringify(value.clusters ?? [], null, 2), defaultCluster: value.defaultCluster ?? '' }
     },
-    write: async (_patch) => {
-      // RPC 退路只支持读（宿主不落盘）——提示用户走官方设置页持久化
-      throw new Error('当前 dsh 未提供 settings 表单服务，请在宿主 profile 配置里手工编辑 clusters')
+    write: async () => {
+      throw new Error('当前 dsh 未提供 settings 表单服务，配置只能在宿主 profile 的 cordis.patch.yml 里改')
     },
   }
 }
@@ -150,20 +150,22 @@ function configFormsChannel(ctx: any): SettingsChannel | undefined {
   const forms = service(ctx, 'configForms')
   if (!forms || typeof forms.get !== 'function') return undefined
 
-  let resolved = false
-  let usable = false
+  /**
+   * 探测命名空间是否已进入镜像。
+   *
+   * 不缓存结果：镜像异步拉取，插件启动时多半还没就绪（设置页首次 describe 后才填
+   * view.namespaces）。wecom 的教训——首次探测失败即永久降级会让面板永远失去写能力。
+   */
   function ensure(): boolean {
-    if (resolved) return usable
-    resolved = true
     try {
       const mirror = typeof forms.describe === 'function' ? forms.describe() : undefined
       if (!mirror || typeof mirror.getSnapshot !== 'function') return false
-      usable = mirror.getSnapshot()?.view?.namespaces?.some((row: any) => row?.ns === SETTINGS_NS) === true
+      return mirror.getSnapshot()?.view?.namespaces?.some((row: any) => row?.ns === SETTINGS_NS) === true
     } catch {
       return false
     }
-    return usable
   }
+
   if (!ensure()) return undefined
 
   const form = (): any => forms.get(SETTINGS_NS)
@@ -217,8 +219,26 @@ function configFormsChannel(ctx: any): SettingsChannel | undefined {
   }
 }
 
-function createChannel(ctx: any, conn: any): SettingsChannel | undefined {
-  return configFormsChannel(ctx) ?? rpcSettingsChannel(conn)
+/**
+ * 运行时择优建通道：**每次读写都重新探测** `configForms`。
+ *
+ * 不缓存探测结果——设置页的配置镜像要等宿主首次 describe 回来才填 view.namespaces，
+ * 插件启动时的探测失败不代表以后也不可用。探测代价极低（一次 map 查找）。
+ */
+function createChannel(ctx: any, conn: any): SettingsChannel {
+  const resolve = (): SettingsChannel | undefined =>
+    configFormsChannel(ctx) ?? rpcSettingsChannel(conn)
+
+  const required = (): SettingsChannel => {
+    const channel = resolve()
+    if (!channel) throw new Error('没有可用的配置读写通道（configForms / RPC 均不可用）')
+    return channel
+  }
+
+  return {
+    read: () => required().read(),
+    write: (patch) => required().write(patch),
+  }
 }
 
 /* ── 面板 ─────────────────────────────────────────────────────────────── */
@@ -250,7 +270,7 @@ interface PanelHandle {
   setChrome(floating: boolean): void
 }
 
-function buildPanel(channel: SettingsChannel | undefined, rpcConn: any): PanelHandle {
+function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   /* 状态区 */
   const status = el('div', { style: 'font-size:12.5px;', textContent: '' })
   const setStatus = (text: string, isError = false): void => {
@@ -421,10 +441,6 @@ function buildPanel(channel: SettingsChannel | undefined, rpcConn: any): PanelHa
   }
 
   async function saveConfig(): Promise<void> {
-    if (!channel) {
-      setStatus('✘ 没有可用的配置通道', true)
-      return
-    }
     const raw = clustersInput.value.trim() || '[]'
     try {
       const parsed = JSON.parse(raw)
@@ -451,10 +467,12 @@ function buildPanel(channel: SettingsChannel | undefined, rpcConn: any): PanelHa
     try {
       await loadClusters()
       await krbStatusCheck()
-      if (channel) {
+      try {
         const value = await channel.read()
         if (typeof value.clusters === 'string') clustersInput.value = value.clusters
         defaultClusterInput.value = value.defaultCluster ?? ''
+      } catch {
+        // 读通道不可用不阻断浏览：集群下拉由 clusters 端点单独填充
       }
       await browse(currentPath)
     } catch (err) {
