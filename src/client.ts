@@ -267,7 +267,15 @@ const STATUS_ERR = 'color:#cf222e;'
 interface PanelHandle {
   root: HTMLElement
   refresh(): void
-  setChrome(floating: boolean): void
+  /**
+   * 布局裁剪：
+   * - 'browse'：只留浏览区 + 关闭按钮（浮动浏览面板，独立页面）
+   * - 'config'：只留配置区（设置页配置项，独立页面）
+   * - true：浮动全量（兜底启动器）
+   * - false：设置页内嵌全量
+   * - 'tab'：紧凑排版（窄容器）
+   */
+  setChrome(mode: boolean | 'tab' | 'browse' | 'config'): void
 }
 
 function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
@@ -555,11 +563,7 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     for (const node of [previewTitle, previewBox, previewClose]) node.style.display = 'none'
   })
 
-  const root = el('div', { style: PANEL_CSS }, [
-    el('div', { style: 'font-weight:700;font-size:14px;', textContent: '🐘 HDFS 浏览器' }),
-    status,
-
-    /* 浏览区 */
+  const browseZone = el('div', { id: 'dsh-hdfs-browse-zone' }, [
     el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;' }, [
       el('span', { style: 'font-weight:600;', textContent: '集群' }),
       clusterSelect,
@@ -583,40 +587,128 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     previewTitle,
     previewBox,
     previewClose,
-
-    /* 配置区 */
-    el('div', { style: 'border-top:1px solid rgba(127,127,127,.25);margin-top:8px;padding-top:8px;' }, [
-      el('span', { style: LABEL_CSS, textContent: 'HDFS 集群配置（JSON 数组）' }),
-      el('span', {
-        style: HINT_CSS,
-        textContent:
-          '[{"id":"prod","url":"hdfs://nameservice1","extraConfig":"{}"}]；' +
-          'extraConfig 里可配 HA 参数与 Kerberos（dfs.namenode.kerberos.principal / dfs.namenode.keytab.file）',
-      }),
-      clustersInput,
-      el('span', { style: LABEL_CSS, textContent: '默认集群 id' }),
-      el('span', { style: HINT_CSS, textContent: '面板与 agent 工具省略 cluster 参数时使用；留空取第一个' }),
-      defaultClusterInput,
-      el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:6px;' }, [saveBtn, validateBtn]),
-    ]),
   ])
+
+  const configZone = el('div', {
+    id: 'dsh-hdfs-config-zone',
+    style: 'border-top:1px solid rgba(127,127,127,.25);margin-top:8px;padding-top:8px;',
+  }, [
+    el('span', { style: LABEL_CSS, textContent: 'HDFS 集群配置（JSON 数组）' }),
+    el('span', {
+      style: HINT_CSS,
+      textContent:
+        '[{"id":"prod","url":"hdfs://nameservice1","extraConfig":"{}"}]；' +
+        'extraConfig 里可配 HA 参数与 Kerberos（dfs.namenode.kerberos.principal / dfs.namenode.keytab.file）',
+    }),
+    clustersInput,
+    el('span', { style: LABEL_CSS, textContent: '默认集群 id' }),
+    el('span', { style: HINT_CSS, textContent: '面板与 agent 工具省略 cluster 参数时使用；留空取第一个' }),
+    defaultClusterInput,
+    el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:6px;' }, [saveBtn, validateBtn]),
+  ])
+
+  /* 标题行：标题文字 + 右上角关闭按钮（仅浮动浏览面板显示） */
+  const closeBtn = el('button', {
+    type: 'button',
+    title: '关闭',
+    id: 'dsh-hdfs-close',
+    textContent: '✕',
+    style: 'margin-left:auto;padding:2px 8px;font-size:13px;cursor:pointer;' +
+      'border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:6px;display:none;',
+  }) as HTMLButtonElement
+  closeBtn.addEventListener('click', () => {
+    root.style.display = 'none'
+  })
+
+  const headingRow = el('div', {
+    id: 'dsh-hdfs-heading',
+    style: 'display:flex;align-items:center;font-weight:700;font-size:14px;',
+  }, [el('span', { textContent: '🐘 HDFS 浏览器' }), closeBtn])
+
+  const root = el('div', { style: PANEL_CSS }, [headingRow, status, browseZone, configZone])
 
   const handle: PanelHandle = {
     root,
     refresh: () => void refreshAll(),
-    setChrome(floating: boolean) {
-      root.style.cssText = floating
-        ? PANEL_CSS +
+    /**
+     * 布局裁剪：
+     * - 'browse'：只留浏览区 + 关闭按钮（浮动浏览面板）
+     * - 'config'：只留配置区（设置页配置项）
+     * - true：浮动全量（兜底启动器用）
+     * - false：设置页内嵌全量
+     * - 'tab'：紧凑排版（窄容器）
+     */
+    setChrome(mode: boolean | 'tab' | 'browse' | 'config') {
+      const browseOnly = mode === 'browse'
+      const configOnly = mode === 'config'
+      if (browseOnly || configOnly) {
+        // 拆分区：浏览/配置各自独立页面，互不干扰
+        browseZone.style.display = browseOnly ? '' : 'none'
+        configZone.style.display = configOnly ? '' : 'none'
+        status.style.display = ''
+        closeBtn.style.display = browseOnly ? '' : 'none'
+        headingRow.firstElementChild && ((headingRow.firstElementChild as HTMLElement).style.display = '')
+      }
+      if (mode === 'browse') {
+        root.style.cssText =
+          'color:var(--fg,#1f2328);font-size:13px;line-height:1.5;display:flex;flex-direction:column;gap:8px;' +
           'position:fixed;right:16px;bottom:16px;z-index:2147483646;width:860px;max-height:80vh;' +
           'overflow:auto;padding:14px;background:var(--bg,#fff);border:1px solid rgba(127,127,127,.35);' +
           'border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.25);'
-        : PANEL_CSS
+        tableWrap.style.maxHeight = '55vh'
+      } else if (mode === 'config') {
+        root.style.cssText = PANEL_CSS
+        tableWrap.style.maxHeight = '420px'
+      } else if (mode === 'tab') {
+        // 紧凑排版（窄容器）
+        root.style.cssText =
+          'color:var(--fg,#1f2328);font-size:12.5px;line-height:1.45;display:flex;' +
+          'flex-direction:column;gap:6px;padding:2px;'
+        browseZone.style.display = ''
+        configZone.style.display = ''
+        closeBtn.style.display = 'none'
+        const label = headingRow.firstElementChild as HTMLElement | null
+        if (label) label.style.display = 'none'
+        tableWrap.style.maxHeight = '50vh'
+      } else if (mode) {
+        root.style.cssText = PANEL_CSS +
+          'position:fixed;right:16px;bottom:16px;z-index:2147483646;width:860px;max-height:80vh;' +
+          'overflow:auto;padding:14px;background:var(--bg,#fff);border:1px solid rgba(127,127,127,.35);' +
+          'border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.25);'
+        browseZone.style.display = ''
+        configZone.style.display = ''
+        closeBtn.style.display = ''
+        const label = headingRow.firstElementChild as HTMLElement | null
+        if (label) label.style.display = ''
+        tableWrap.style.maxHeight = '420px'
+      } else {
+        root.style.cssText = PANEL_CSS
+        browseZone.style.display = ''
+        configZone.style.display = ''
+        closeBtn.style.display = 'none'
+        const label = headingRow.firstElementChild as HTMLElement | null
+        if (label) label.style.display = ''
+        tableWrap.style.maxHeight = '420px'
+      }
     },
   }
   return handle
 }
 
-/* ── 挂载进 dsh 设置页 ─────────────────────────────────────────────────── */
+/* ── 挂载策略（按优先级逐级降级） ──────────────────────────────────────────
+   1. 侧边栏 footer 按钮（`sidebar.footer.action`）+ 栏内展开面板——根作用域
+      插槽，体验最接近「点开就有目录」。
+   2. 设置页插槽（settings.plugins.tab → plugin.item → section）。
+   3. 浮动启动器 + 浮动面板（DOM 兜底）。
+
+   ⚠ 已废弃：`sidebar.right.pane.tab` 侧边栏 tab（2026-10-14 实测不可行）。
+   该插槽由 `rightbar.session` 条目（session 作用域）声明，根 fiber 的
+   slots.inject 回调永不触发；附带服务 `sidebarRightTabs` / `sidebarRight`
+   在兄弟 fiber 同样不可见（probe 实测全 false）。插槽代码已删，将来 dsh
+   若把该插槽提升到根作用域可参考 git 历史恢复。
+   ────────────────────────────────────────────────────────────────────── */
+
+/* ── 回退 A：设置页插槽 ────────────────────────────────────────────────── */
 
 function settingsSlotOptions(React: any): Array<[string, Record<string, unknown>]> {
   const label = (): string => 'HDFS'
@@ -633,7 +725,8 @@ function createSettingsComponent(React: any, handle: PanelHandle): any {
     React.useEffect(function () {
       const node = ref.current as HTMLElement | null
       if (!node) return
-      handle.setChrome(false)
+      // 设置页只放配置区（浏览是另一个页面——侧边栏按钮 + 浮动面板）
+      handle.setChrome('config')
       node.appendChild(handle.root)
       handle.refresh()
     }, [])
@@ -700,39 +793,94 @@ function tryRegisterSettingsSlot(ctx: any, handle: PanelHandle, onSlotted: () =>
   return mounted
 }
 
-/* ── 回退挂载：浮动启动器 ──────────────────────────────────────────────── */
+/* ── 挂载策略（按优先级逐级降级） ──────────────────────────────────────────
+   1. 侧边栏 footer 按钮（`sidebar.footer.action` 插槽）+ 侧边栏内展开面板——
+      根作用域插槽，探测可用；体验最接近「像工作区文件那样点开就有目录」。
+   2. 设置页插槽（settings.plugins.tab → plugin.item → section）。
+   3. 浮动启动器 + 浮动面板（DOM 兜底）。
 
-const SIDEBAR_SLOT = 'sidebar.footer.action'
-const SIDEBAR_BTN_CSS =
-  'display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;' +
-  'margin:4px 0;padding:8px 10px;font-size:13px;cursor:pointer;' +
-  'border:1px solid rgba(127,127,127,.25);background:transparent;color:inherit;border-radius:8px;'
-const FLOAT_BTN_CSS =
-  'position:fixed;left:16px;bottom:16px;z-index:2147483647;padding:9px 14px;' +
-  'font-size:13px;background:#1f6feb;color:#fff;border:none;border-radius:8px;' +
-  'box-shadow:0 2px 8px rgba(0,0,0,.3);margin:0;'
+   ⚠ 已废弃：`sidebar.right.pane.tab` 侧边栏 tab。该插槽由 `rightbar.session`
+   条目（session 作用域）声明，根 fiber 的 slots.inject 回调永不触发
+   （2026-10-14 实测：只有 probe 日志、没有 declared 日志）。附带服务
+   `sidebarRightTabs` / `sidebarRight` 在兄弟 fiber 同样不可见。若将来 dsh
+   把该插槽提升到根作用域，或本插件的 fiber 能注入这些服务，可恢复。
+   ────────────────────────────────────────────────────────────────────── */
 
-function mountLauncher(launcher: HTMLButtonElement): () => void {
-  let dead = false
-  const styleSidebar = (): void => { launcher.style.cssText = SIDEBAR_BTN_CSS }
-  const styleFloat = (): void => { launcher.style.cssText = FLOAT_BTN_CSS }
+const SIDEBAR_FOOTER_SLOT = 'sidebar.footer.action'
 
-  function sidebarHost(): Element | null {
-    return doc.querySelector(`[data-slot="${SIDEBAR_SLOT}"]`)
+/**
+ * 侧边栏 footer 按钮（`sidebar.footer.action` 插槽）。
+ *
+ * 契约事实（cordis-client-runner SlotMap）：
+ * - `kind: "list"`：**列表插槽**，每个条目是「Settings 旁的一个小按钮」，
+ *   不是容器——把面板塞进来会撞 React error #62（对象被当 child）。
+ * - 组件签名只收 owner 的 `{ wide }`（侧边栏宽栏/56px rail）。
+ * - `scope: "root"`：根作用域，slots.inject 回调立即触发。
+ *
+ * 因此按钮只做「开关」，点击切**浮动面板**的显示（面板是纯 DOM，
+ * 不经过 React，无任何渲染契约风险）。
+ */
+function createSidebarButton(React: any, handle: PanelHandle): any {
+  const Icon = createNavIcon(React)
+  return function HdfsSidebarButton({ wide }: { wide?: boolean }): any {
+    const [open, setOpen] = React.useState(false)
+    React.useEffect(function () {
+      // 打开时把浮动面板显示出来；关闭时隐藏（面板 DOM 由 apply 预挂到 body）
+      handle.root.style.display = open ? 'flex' : 'none'
+      if (open) handle.refresh()
+    }, [open])
+    return React.createElement(
+      'button',
+      {
+        type: 'button',
+        title: 'HDFS 浏览器',
+        'data-dsh-hdfs-sidebar-toggle': 'true',
+        'aria-expanded': open ? 'true' : 'false',
+        onClick: () => setOpen((v: boolean) => !v),
+        style: {
+          display: 'flex', alignItems: 'center', gap: wide === false ? '0' : '8px',
+          justifyContent: wide === false ? 'center' : 'flex-start',
+          width: '100%', boxSizing: 'border-box', margin: '2px 0', padding: '8px 10px',
+          fontSize: '13px', cursor: 'pointer',
+          border: '1px solid rgba(127,127,127,.25)',
+          background: open ? 'rgba(127,127,127,.15)' : 'transparent',
+          color: 'inherit', borderRadius: '8px',
+        },
+      },
+      React.createElement(Icon, null),
+      wide === false ? null : 'HDFS',
+    )
   }
-  function ensureMounted(): void {
-    if (dead) return
-    const host = sidebarHost()
-    if (host) {
-      if (launcher.parentElement !== host) { host.append(launcher); styleSidebar() }
-    } else if (launcher.parentElement !== doc.body) {
-      doc.body.append(launcher); styleFloat()
-    }
+}
+
+/**
+ * 侧边栏 footer 按钮路线：注册 `sidebar.footer.action` 插槽。
+ *
+ * 面板本体由调用方预挂为浮动面板（apply 里 buildPanel + body.append），
+ * 这里只注册按钮；注册成功返回 true。
+ */
+function tryRegisterSidebarEntry(ctx: any, handle: PanelHandle): boolean {
+  const slots = service(ctx, 'slots')
+  if (!slots || typeof slots.inject !== 'function') return false
+  let React: any
+  try { React = require('react') } catch { return false }
+  if (!React || typeof React.createElement !== 'function') return false
+  console.info('[dsh-hdfs] registering sidebar.footer.action button (root-scope list slot)')
+  try {
+    ctx.effect(() => slots.inject(SIDEBAR_FOOTER_SLOT, () => {
+      const Button = createSidebarButton(React, handle)
+      return slots.register({
+        name: SIDEBAR_FOOTER_SLOT,
+        id: PLUGIN_ID,
+        order: 50,
+        label: 'HDFS',
+      }, Button)
+    }), 'hdfs: sidebar footer button')
+    return true
+  } catch (err) {
+    console.warn('[dsh-hdfs] sidebar footer registration failed:', err)
+    return false
   }
-  ensureMounted()
-  const observer = new MutationObserver(() => ensureMounted())
-  observer.observe(doc.documentElement, { childList: true, subtree: true })
-  return () => { dead = true; observer.disconnect(); launcher.remove() }
 }
 
 /* ── 客户端插件契约 ────────────────────────────────────────────────────── */
@@ -744,33 +892,50 @@ function apply(ctx: any): void {
   win.__dshHdfsMounted = true
 
   const channel = createChannel(ctx, conn)
-  const handle = buildPanel(channel, conn)
-  const panel = handle.root
-  panel.id = 'dsh-hdfs-panel'
 
-  let disposeLauncher: (() => void) | undefined
-  if (tryRegisterSettingsSlot(ctx, handle, () => { disposeLauncher?.() })) return
+  // 布局策略（2026-10-14 定稿）：
+  // - **浏览面板**：浮动、只含浏览区（集群下拉/路径/表格/预览/Kerberos），
+  //   右上角带 ✕ 关闭按钮；由侧边栏 footer 按钮（`sidebar.footer.action`，
+  //   根作用域 list 插槽，注册为纯按钮组件）切换显示；
+  // - **配置面板**：设置页插槽挂载，只含配置区（clusters JSON + defaultCluster
+  //   + 保存/校验）——与浏览页彻底分离，两个独立页面；
+  // - 两者持**独立**面板实例（buildPanel 是纯 DOM 工厂，共用同一份
+  //   handle.root 会互相搬走 DOM——曾导致「配置页面不见了」）；
+  // - 两个插槽都注册失败时，左下浮动按钮兜底控制浏览面板。
+  let entryCount = 0
 
-  // 回退：设置页插槽不可用时保留浮动启动器
-  handle.setChrome(true)
-  panel.style.display = 'none'
-  doc.body.append(panel)
+  const browseHandle = buildPanel(channel, conn)
+  browseHandle.root.id = 'dsh-hdfs-browse-panel'
+  browseHandle.setChrome('browse')
+  browseHandle.root.style.display = 'none'
+  doc.body.append(browseHandle.root)
+  if (tryRegisterSidebarEntry(ctx, browseHandle)) entryCount += 1
 
-  const launcher = el('button', {
-    textContent: '🐘 HDFS',
-    id: 'dsh-hdfs-launcher',
-  }) as HTMLButtonElement
+  const configHandle = buildPanel(channel, conn)
+  if (tryRegisterSettingsSlot(ctx, configHandle, () => {})) entryCount += 1
 
-  launcher.addEventListener('click', () => {
-    if (panel.style.display === 'none') {
-      panel.style.display = 'flex'
-      handle.refresh()
-    } else {
-      panel.style.display = 'none'
-    }
-  })
+  // 兜底：两个插槽都没挂上时，浮动按钮直接控制那份已挂好的浏览面板
+  if (entryCount === 0) {
+    const panel = browseHandle.root
+    const launcher = el('button', {
+      textContent: '🐘 HDFS',
+      id: 'dsh-hdfs-launcher',
+      style: 'position:fixed;left:16px;bottom:16px;z-index:2147483647;padding:9px 14px;' +
+        'font-size:13px;background:#1f6feb;color:#fff;border:none;border-radius:8px;' +
+        'box-shadow:0 2px 8px rgba(0,0,0,.3);margin:0;cursor:pointer;',
+    }) as HTMLButtonElement
 
-  disposeLauncher = mountLauncher(launcher)
+    launcher.addEventListener('click', () => {
+      if (panel.style.display === 'none') {
+        panel.style.display = 'flex'
+        browseHandle.refresh()
+      } else {
+        panel.style.display = 'none'
+      }
+    })
+
+    doc.body.append(launcher)
+  }
 }
 
-module.exports = { name: PLUGIN_ID, inject: ['connection'], apply }
+module.exports = { name: PLUGIN_ID, inject: ['connection', 'slots'], apply }
