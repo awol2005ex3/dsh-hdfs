@@ -6,6 +6,8 @@ DeepSeek Harness (dsh) 插件：**在 dsh 里浏览与操作 HDFS**。Rust (napi
 - 浏览器半：设置页 HDFS 面板（目录树 / 文件预览 / 集群配置 / Kerberos 登录）
 - 原生半：`hdfs-native` 0.11 封装，纯 Rust Kerberos（keytab → TGT → ccache）
 
+![截图](docs/截图.png)
+
 ## 能力
 
 | 分类 | 端点（agent 工具 `hdfs` 的 `endpoint` 同名） |
