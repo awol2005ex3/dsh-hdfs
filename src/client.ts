@@ -607,7 +607,12 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:6px;' }, [saveBtn, validateBtn]),
   ])
 
-  /* 标题行：标题文字 + 右上角关闭按钮（仅浮动浏览面板显示） */
+  /* 标题行：标题文字 + 最大化/关闭按钮（仅浮动浏览面板显示） */
+  let maximized = false
+  /** 未最大化时记住的浮动几何；首次显示时用默认值填充，之后拖动/resize 实时更新。 */
+  let savedRect = { left: -1, top: -1, width: 860, height: 560 }
+  let rectSeeded = false
+
   const closeBtn = el('button', {
     type: 'button',
     title: '关闭',
@@ -620,12 +625,143 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     root.style.display = 'none'
   })
 
+  const maximizeBtn = el('button', {
+    type: 'button',
+    title: '最大化 / 还原',
+    id: 'dsh-hdfs-maximize',
+    textContent: '⤢',
+    style: 'margin-left:8px;padding:2px 8px;font-size:13px;cursor:pointer;' +
+      'border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:6px;display:none;',
+  }) as HTMLButtonElement
+
+  /** 把 root 的当前布局固化成 left/top/width/height（display:none 时拿不到矩形，跳过）。 */
+  function seedRect(): void {
+    if (root.style.display === 'none') return
+    const rect = root.getBoundingClientRect()
+    if (rect.width < 40 || rect.height < 40) return
+    savedRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+    rectSeeded = true
+  }
+
+  /** 把 left/top 锚定（right/bottom → auto），为拖动/resize 做准备。 */
+  function anchorLeftTop(): void {
+    if (root.style.right !== 'auto') {
+      seedRect()
+      root.style.right = 'auto'
+      root.style.bottom = 'auto'
+      root.style.left = `${savedRect.left}px`
+      root.style.top = `${savedRect.top}px`
+      root.style.width = `${savedRect.width}px`
+      root.style.height = `${savedRect.height}px`
+    }
+  }
+
+  function applyMaximize(): void {
+    if (maximized) {
+      seedRect() // 记住最大化前的几何（仅首次有效，拖动/resize 已实时更新 savedRect）
+      root.style.left = '24px'
+      root.style.top = '24px'
+      root.style.right = '24px'
+      root.style.bottom = '24px'
+      root.style.width = 'auto'
+      root.style.height = 'auto'
+      root.style.maxHeight = 'none'
+      maximizeBtn.textContent = '⤣'
+      maximizeBtn.title = '还原'
+      tableWrap.style.maxHeight = 'calc(100vh - 230px)'
+    } else {
+      // 还原：回到 savedRect（拖动/resize 后它始终是最新的浮动几何）
+      root.style.left = `${savedRect.left}px`
+      root.style.top = `${savedRect.top}px`
+      root.style.width = `${savedRect.width}px`
+      root.style.height = `${savedRect.height}px`
+      root.style.right = 'auto'
+      root.style.bottom = 'auto'
+      root.style.maxHeight = '80vh'
+      maximizeBtn.textContent = '⤢'
+      maximizeBtn.title = '最大化'
+      tableWrap.style.maxHeight = '55vh'
+    }
+  }
+  maximizeBtn.addEventListener('click', () => {
+    maximized = !maximized
+    applyMaximize()
+  })
+
+  /* ── 标题栏拖动（最大化时禁用） ───────────────────────────────────────── */
+  const headingLabel = el('span', { textContent: '🐘 HDFS 浏览器', style: 'user-select:none;' })
   const headingRow = el('div', {
     id: 'dsh-hdfs-heading',
-    style: 'display:flex;align-items:center;font-weight:700;font-size:14px;',
-  }, [el('span', { textContent: '🐘 HDFS 浏览器' }), closeBtn])
+    style: 'display:flex;align-items:center;font-weight:700;font-size:14px;' +
+      'cursor:move;flex-shrink:0;',
+  }, [headingLabel, maximizeBtn, closeBtn])
 
-  const root = el('div', { style: PANEL_CSS }, [headingRow, status, browseZone, configZone])
+  headingRow.addEventListener('mousedown', (ev) => {
+    if (maximized) return
+    const mouse = ev as MouseEvent
+    if (mouse.button !== 0) return
+    ev.preventDefault()
+    anchorLeftTop()
+    const startLeft = savedRect.left
+    const startTop = savedRect.top
+    const offsetX = mouse.clientX - startLeft
+    const offsetY = mouse.clientY - startTop
+
+    const onMove = (e: MouseEvent): void => {
+      // 至少保留 80px 标题在视口内，防止拖出屏幕后无法找回
+      const x = Math.min(Math.max(e.clientX - offsetX, 80 - savedRect.width), window.innerWidth - 80)
+      const y = Math.min(Math.max(e.clientY - offsetY, 0), window.innerHeight - 40)
+      savedRect.left = x
+      savedRect.top = y
+      root.style.left = `${x}px`
+      root.style.top = `${y}px`
+    }
+    const onUp = (): void => {
+      doc.removeEventListener('mousemove', onMove)
+      doc.removeEventListener('mouseup', onUp)
+    }
+    doc.addEventListener('mousemove', onMove)
+    doc.addEventListener('mouseup', onUp)
+  })
+
+  /* ── 右下角拖拽改变大小（最大化时禁用） ───────────────────────────────── */
+  const resizeGrip = el('div', {
+    title: '拖拽改变大小',
+    id: 'dsh-hdfs-resize-grip',
+    style: 'position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;' +
+      'background:linear-gradient(135deg,transparent 50%,rgba(127,127,127,.45) 50%);' +
+      'border-bottom-right-radius:10px;display:none;',
+  })
+  resizeGrip.addEventListener('mousedown', (ev) => {
+    if (maximized) return
+    const mouse = ev as MouseEvent
+    if (mouse.button !== 0) return
+    ev.preventDefault()
+    ev.stopPropagation()
+    anchorLeftTop()
+    const startW = savedRect.width
+    const startH = savedRect.height
+    const startX = mouse.clientX
+    const startY = mouse.clientY
+
+    const onMove = (e: MouseEvent): void => {
+      // 最小 480x360，最大不超出视口
+      const w = Math.min(Math.max(e.clientX - startX + startW, 480), window.innerWidth - savedRect.left - 8)
+      const h = Math.min(Math.max(e.clientY - startY + startH, 360), window.innerHeight - savedRect.top - 8)
+      savedRect.width = w
+      savedRect.height = h
+      root.style.width = `${w}px`
+      root.style.height = `${h}px`
+    }
+    const onUp = (): void => {
+      doc.removeEventListener('mousemove', onMove)
+      doc.removeEventListener('mouseup', onUp)
+    }
+    doc.addEventListener('mousemove', onMove)
+    doc.addEventListener('mouseup', onUp)
+  })
+
+  const root = el('div', { style: PANEL_CSS }, [headingRow, status, browseZone, configZone, resizeGrip])
 
   const handle: PanelHandle = {
     root,
@@ -647,7 +783,9 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         configZone.style.display = configOnly ? '' : 'none'
         status.style.display = ''
         closeBtn.style.display = browseOnly ? '' : 'none'
-        headingRow.firstElementChild && ((headingRow.firstElementChild as HTMLElement).style.display = '')
+        maximizeBtn.style.display = browseOnly ? '' : 'none'
+        const label = headingRow.firstElementChild as HTMLElement | null
+        if (label) label.style.display = ''
       }
       if (mode === 'browse') {
         root.style.cssText =
@@ -655,9 +793,13 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
           'position:fixed;right:16px;bottom:16px;z-index:2147483646;width:860px;max-height:80vh;' +
           'overflow:auto;padding:14px;background:var(--bg,#fff);border:1px solid rgba(127,127,127,.35);' +
           'border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.25);'
+        resizeGrip.style.display = ''
         tableWrap.style.maxHeight = '55vh'
       } else if (mode === 'config') {
         root.style.cssText = PANEL_CSS
+        closeBtn.style.display = 'none'
+        maximizeBtn.style.display = 'none'
+        resizeGrip.style.display = 'none'
         tableWrap.style.maxHeight = '420px'
       } else if (mode === 'tab') {
         // 紧凑排版（窄容器）
@@ -667,6 +809,8 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         browseZone.style.display = ''
         configZone.style.display = ''
         closeBtn.style.display = 'none'
+        maximizeBtn.style.display = 'none'
+        resizeGrip.style.display = 'none'
         const label = headingRow.firstElementChild as HTMLElement | null
         if (label) label.style.display = 'none'
         tableWrap.style.maxHeight = '50vh'
@@ -678,6 +822,8 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         browseZone.style.display = ''
         configZone.style.display = ''
         closeBtn.style.display = ''
+        maximizeBtn.style.display = ''
+        resizeGrip.style.display = ''
         const label = headingRow.firstElementChild as HTMLElement | null
         if (label) label.style.display = ''
         tableWrap.style.maxHeight = '420px'
@@ -686,6 +832,8 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         browseZone.style.display = ''
         configZone.style.display = ''
         closeBtn.style.display = 'none'
+        maximizeBtn.style.display = 'none'
+        resizeGrip.style.display = 'none'
         const label = headingRow.firstElementChild as HTMLElement | null
         if (label) label.style.display = ''
         tableWrap.style.maxHeight = '420px'
