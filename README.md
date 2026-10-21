@@ -3,7 +3,7 @@
 DeepSeek Harness (dsh) 插件：**在 dsh 里浏览与操作 HDFS**。Rust (napi-rs + hdfs-native) 直连集群，支持 HA 多 Namenode 与 Kerberos，带 Web 浏览面板与 agent 工具。
 
 - 宿主半：`/api/hdfs/*` RPC 路由 + `hdfs` agent 工具
-- 浏览器半：设置页 HDFS 面板（目录树 / 文件预览 / 集群配置 / Kerberos 登录）
+- 浏览器半：设置页 HDFS 面板（目录树 / 文件预览 / 列表排序 / 集群配置 / Kerberos 登录）
 - 原生半：`hdfs-native` 0.11 封装，纯 Rust Kerberos（keytab → TGT → ccache）
 
 ![截图](docs/截图.png)

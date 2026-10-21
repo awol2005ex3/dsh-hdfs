@@ -109,6 +109,9 @@ interface ListResult {
   selfInfo?: HdfsFileRow | null
 }
 
+/** 可排序列：与旧 hdfs-gui 的 el-table 列一一对应。 */
+type SortKey = 'name' | 'type' | 'permission' | 'owner' | 'size' | 'mtime'
+
 interface ClusterInfo {
   clusters: Array<{ id: string; url: string }>
   defaultCluster: string
@@ -398,24 +401,92 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     }
   }
 
+  /** 排序状态：null = 原始（HDFS 返回）顺序。 */
+  let sortKey: SortKey | null = null
+  let sortDir: 'asc' | 'desc' = 'asc'
+  let lastResult: ListResult | null = null
+
+  /**
+   * 排序取值。对齐旧 hdfs-gui：按数据字段排，不按格式化后的字符串
+   * （大小按字节、时间按毫秒、权限按八进制位）。
+   */
+  function sortValue(f: HdfsFileRow, key: SortKey): string | number {
+    switch (key) {
+      case 'name': return f.name.toLowerCase()
+      case 'type': return f.isdir ? 1 : 0
+      case 'permission': return f.permission >>> 0
+      case 'owner': return `${f.owner ?? ''}:${f.group ?? ''}`.toLowerCase()
+      case 'size': return f.isdir ? (f.spaceConsumed ?? 0) : f.length
+      case 'mtime': return f.modificationTime
+    }
+  }
+
+  function sortedFiles(files: HdfsFileRow[]): HdfsFileRow[] {
+    if (!sortKey) return files
+    const key = sortKey
+    const dir = sortDir === 'desc' ? -1 : 1
+    return files.slice().sort((a, b) => {
+      const av = sortValue(a, key)
+      const bv = sortValue(b, key)
+      if (av < bv) return -dir
+      if (av > bv) return dir
+      // 同值用名称兜底，避免每次点击后顺序漂移
+      return a.name.localeCompare(b.name) || 0
+    })
+  }
+
+  /** 点击表头：升序 → 降序 → 取消（恢复原始顺序），与 el-table 一致。 */
+  function toggleSort(key: SortKey): void {
+    if (sortKey !== key) {
+      sortKey = key
+      sortDir = 'asc'
+    } else if (sortDir === 'asc') {
+      sortDir = 'desc'
+    } else {
+      sortKey = null
+      sortDir = 'asc'
+    }
+    if (lastResult) renderRows(lastResult)
+  }
+
   function renderRows(result: ListResult): void {
+    lastResult = result
     fileTable.textContent = ''
-    const thead = el('thead', {}, [
-      el('tr', {}, [
-        el('th', { textContent: '名称' }),
-        el('th', { textContent: '类型' }),
-        el('th', { textContent: '权限' }),
-        el('th', { textContent: '属主' }),
-        el('th', { textContent: '大小' }),
-        el('th', { textContent: '修改时间' }),
-        el('th', { textContent: '操作' }),
-      ]),
-    ])
-    for (const th of thead.querySelectorAll('th')) th.setAttribute('style', CELL_CSS)
-    fileTable.append(thead)
+    const columns: Array<{ label: string; key?: SortKey }> = [
+      { label: '名称', key: 'name' },
+      { label: '类型', key: 'type' },
+      { label: '权限', key: 'permission' },
+      { label: '属主', key: 'owner' },
+      { label: '大小', key: 'size' },
+      { label: '修改时间', key: 'mtime' },
+      { label: '操作' },
+    ]
+    const headRow = el('tr')
+    for (const col of columns) {
+      const active = Boolean(col.key) && sortKey === col.key
+      const arrow = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : col.key ? ' ⇅' : ''
+      const th = el('th', { textContent: col.label })
+      if (col.key) {
+        th.setAttribute(
+          'style',
+          CELL_CSS + 'cursor:pointer;user-select:none;' + (active ? 'color:#1f6feb;' : ''),
+        )
+        th.setAttribute('title', '点击排序：升序 → 降序 → 取消')
+        th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none')
+        if (arrow) {
+          const mark = el('span', { textContent: arrow, style: active ? '' : 'opacity:.45;' })
+          th.append(mark)
+        }
+        th.addEventListener('click', () => toggleSort(col.key as SortKey))
+      } else {
+        th.setAttribute('style', CELL_CSS)
+      }
+      headRow.append(th)
+    }
+    fileTable.append(el('thead', {}, [headRow]))
 
     const tbody = el('tbody')
-    for (const f of result.files) {
+    for (const f of sortedFiles(result.files)) {
       const openBtn = el('button', {
         type: 'button',
         textContent: f.isdir ? '进入' : '预览',
