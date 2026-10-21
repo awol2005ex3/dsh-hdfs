@@ -11,6 +11,9 @@
  *   code/details 不可省略，浏览器信封校验会拒绝残缺错误。
  * - 业务错误一律 HTTP 200 + 错误分支；错误码用闭合集里的 'bad-request'。
  */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { HdfsSettings, HdfsCluster } from './settings.js'
 import type {
   DshHdfsNative,
@@ -118,6 +121,39 @@ function aclEntries(args: Record<string, unknown>, key: string): HdfsAclEntry[] 
 
 /** 端点 → 是否需要集群配置（version / clusters / kerberosStatus 不需要）。 */
 const CLUSTER_FREE = new Set<string>(['version', 'clusters', 'kerberosStatus'])
+
+/** 浏览器上传体积上限（HTTP 载体本身有 300MB 缓冲上限，这里留出 base64 膨胀余量）。 */
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+/**
+ * 浏览器上传：把 base64 落成宿主临时文件，再复用原生 `uploadFile` 的 64KB 分块流式路径。
+ *
+ * 浏览器拿不到用户本地文件的真实路径（File 对象不含 path），所以字节必须走 RPC；
+ * 临时文件是宿主进程权限内的中转，写完即删，不改变原生模块契约。
+ */
+async function uploadBase64(
+  native: DshHdfsNative,
+  config: NativeHdfsConfig,
+  name: string,
+  base64: string,
+  remoteDir: string,
+): Promise<string> {
+  const fileName = basename(name)
+  if (!fileName || fileName === '.' || fileName === '..') throw new Error(`非法文件名: ${name}`)
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.byteLength === 0) throw new Error(`上传内容为空: ${name}`)
+  if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+    throw new Error(`文件过大: ${name}（${buffer.byteLength} 字节，上限 ${MAX_UPLOAD_BYTES} 字节）`)
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-hdfs-upload-'))
+  try {
+    const local = join(dir, fileName)
+    await writeFile(local, buffer)
+    return await native.uploadFile(config, local, remoteDir)
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}
 
 /**
  * 构造 RPC 分发器。
@@ -275,10 +311,24 @@ export function createRpcDispatcher(
           return ok(await native.kerberosLoginWithConfig(config))
 
         case 'upload': {
-          const local = str(args, 'localPath')
           const remoteDir = str(args, 'remoteDir', '/')
-          if (!local) throw new Error('localPath 不能为空')
-          return ok({ path: await native.uploadFile(config, local, remoteDir) })
+          const local = str(args, 'localPath')
+          if (local) return ok({ path: await native.uploadFile(config, local, remoteDir) })
+          // 浏览器半：File 对象没有本地路径，改传 name + base64，宿主中转临时文件。
+          const name = str(args, 'name')
+          const base64 = str(args, 'base64')
+          if (!name || !base64) {
+            // 回显实际收到的参数：上传失败最常见的原因是浏览器端插件代码是旧版本
+            // （File 没有本地路径，旧版只会传空 localPath），仅凭一句「需要 name + base64」看不出是谁的锅。
+            const seen = Object.entries(args)
+              .map(([k, v]) => `${k}=${typeof v === 'string' ? `"${v.length > 24 ? `${v.slice(0, 12)}…(${v.length}字符)` : v}"` : String(v)}`)
+              .join(', ') || '(空)'
+            const stale = num(args, 'uploadProtocol', 0) < 2
+              ? '；浏览器端插件代码是旧版本，请按 Ctrl+Shift+R 强制刷新页面后重试'
+              : ''
+            throw new Error(`upload 需要 localPath，或 name + base64（收到的参数: ${seen}）${stale}`)
+          }
+          return ok({ path: await uploadBase64(native, config, name, base64, remoteDir) })
         }
 
         case 'download': {

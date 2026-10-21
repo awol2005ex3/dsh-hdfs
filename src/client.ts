@@ -317,7 +317,23 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   const krbLoginBtn = el('button', { type: 'button', textContent: '🔑 Kerberos 登录', style: BTN_CSS }) as HTMLButtonElement
   const pingBtn = el('button', { type: 'button', textContent: '测试连接', style: BTN_CSS }) as HTMLButtonElement
 
+  /* 文件操作工具栏：新建目录 / 新建文件 / 上传 / 删除所选 */
+  const mkdirBtn = el('button', { type: 'button', textContent: '＋ 新建目录', title: '在当前目录新建文件夹', style: BTN_CSS }) as HTMLButtonElement
+  const createFileBtn = el('button', { type: 'button', textContent: '＋ 新建文件', title: '在当前目录新建空白文件', style: BTN_CSS }) as HTMLButtonElement
+  const uploadBtn = el('button', { type: 'button', textContent: '⬆ 上传文件', title: '从本机选择文件上传到当前目录', style: BTN_CSS }) as HTMLButtonElement
+  const deleteBtn = el('button', { type: 'button', textContent: '🗑 删除所选', title: '删除表格中勾选的文件/目录', style: BTN_CSS + 'color:#cf222e;' }) as HTMLButtonElement
+  /**
+   * 浏览器文件选择器。选中的 File 没有宿主机路径，所以读取字节后以 base64
+   * 走 `upload` RPC，由宿主落临时文件再交给原生模块分块上传。
+   */
+  const fileInput = el('input', { type: 'file', multiple: true, style: 'display:none;' }) as HTMLInputElement
+  const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
   let currentPath = '/'
+  /** 勾选待删除的路径；换目录时清空，排序/重渲染时保留。 */
+  const selectedPaths = new Set<string>()
+  /** 当前表头的全选框（重渲染时重建）。 */
+  let selectAllBox: HTMLInputElement | null = null
 
   /** 当前集群 id（下拉选择优先，缺省用 defaultCluster）。 */
   function activeCluster(): string {
@@ -372,8 +388,8 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     }
   }
 
-  /** 列目录并渲染表格。 */
-  async function browse(path?: string): Promise<void> {
+  /** 列目录并渲染表格；成功返回 true（操作类按钮据此决定是否覆盖状态提示）。 */
+  async function browse(path?: string): Promise<boolean> {
     const target = (path ?? currentPath).trim() || '/'
     setStatus(`加载 ${target} …`)
     try {
@@ -384,8 +400,10 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       })) as ListResult
       currentPath = value.path || target
       pathInput.value = currentPath
+      selectedPaths.clear()
       renderRows(value)
       setStatus(`✔ ${currentPath}（${value.files.length} 项）`)
+      return true
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setStatus(`✘ ${message}`, true)
@@ -398,6 +416,7 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
           krbLoginBtn.setAttribute('style', BTN_CSS + 'border-color:#cf222e;color:#cf222e;')
         }
       }
+      return false
     }
   }
 
@@ -453,6 +472,7 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     lastResult = result
     fileTable.textContent = ''
     const columns: Array<{ label: string; key?: SortKey }> = [
+      { label: '' },
       { label: '名称', key: 'name' },
       { label: '类型', key: 'type' },
       { label: '权限', key: 'permission' },
@@ -466,6 +486,19 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       const active = Boolean(col.key) && sortKey === col.key
       const arrow = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : col.key ? ' ⇅' : ''
       const th = el('th', { textContent: col.label })
+      if (!col.label) {
+        // 勾选列：表头复选框全选/全不选当前目录
+        const selectAll = el('input', { type: 'checkbox' }) as HTMLInputElement
+        selectAll.title = '全选 / 全不选'
+        selectAll.checked = result.files.length > 0 && result.files.every((f) => selectedPaths.has(f.path))
+        selectAllBox = selectAll
+        selectAll.addEventListener('change', () => {
+          if (selectAll.checked) for (const f of result.files) selectedPaths.add(f.path)
+          else selectedPaths.clear()
+          renderRows(result)
+        })
+        th.append(selectAll)
+      }
       if (col.key) {
         th.setAttribute(
           'style',
@@ -496,7 +529,16 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         if (f.isdir) void browse(f.path)
         else void preview(f.path)
       })
+      const checkbox = el('input', { type: 'checkbox' }) as HTMLInputElement
+      checkbox.checked = selectedPaths.has(f.path)
+      checkbox.title = `选择 ${f.name}`
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) selectedPaths.add(f.path)
+        else selectedPaths.delete(f.path)
+        updateSelectionUi()
+      })
       const tr = el('tr', {}, [
+        el('td', {}, [checkbox]),
         el('td', { textContent: f.name }),
         el('td', { textContent: f.isdir ? '📁' : '📄' }),
         el('td', { textContent: fmtPerm(f.permission) }),
@@ -509,6 +551,17 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       tbody.append(tr)
     }
     fileTable.append(tbody)
+    updateSelectionUi()
+  }
+
+  /** 工具栏删除按钮上的已选数量，并同步表头全选框。 */
+  function updateSelectionUi(): void {
+    const n = selectedPaths.size
+    deleteBtn.textContent = n > 0 ? `🗑 删除所选（${n}）` : '🗑 删除所选'
+    if (selectAllBox && lastResult) {
+      selectAllBox.checked = lastResult.files.length > 0
+        && lastResult.files.every((f) => selectedPaths.has(f.path))
+    }
   }
 
   async function preview(path: string): Promise<void> {
@@ -524,6 +577,135 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       previewBox.textContent = value.content || '(空文件或二进制内容)'
       for (const node of [previewTitle, previewBox, previewClose]) node.style.display = ''
       setStatus(`✔ 已读取 ${path}`)
+    } catch (err) {
+      setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
+    }
+  }
+
+  /** 拼接当前目录与名称（根目录不产生双斜杠）。 */
+  function joinPath(dir: string, name: string): string {
+    return `${dir.replace(/\/+$/, '')}/${name}`
+  }
+
+  /** 弹窗输入名称；空名 / 含路径分隔符 / . 与 .. 一律拒绝。 */
+  function promptName(title: string, placeholder: string): string | null {
+    const raw = window.prompt(title, placeholder)
+    if (raw === null) return null
+    const name = raw.trim()
+    if (!name) {
+      setStatus('✘ 名称不能为空', true)
+      return null
+    }
+    if (name === '.' || name === '..' || /[/\\]/.test(name)) {
+      setStatus('✘ 名称不能包含路径分隔符，也不能是 . 或 ..', true)
+      return null
+    }
+    return name
+  }
+
+  /** 新建目录（mkdrs -p 语义：父目录存在即可）。 */
+  async function createFolder(): Promise<void> {
+    const name = promptName('新建目录名称：', 'new_folder')
+    if (!name) return
+    const path = joinPath(currentPath, name)
+    setStatus(`创建目录 ${path} …`)
+    try {
+      await callRpc(rpcConn, 'mkdirs', { cluster: activeCluster(), path })
+      if (await browse()) setStatus(`✔ 已创建目录 ${path}`)
+    } catch (err) {
+      setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
+    }
+  }
+
+  /** 新建空白文件。 */
+  async function createFile(): Promise<void> {
+    const name = promptName('新建文件名称：', 'new_file.txt')
+    if (!name) return
+    const path = joinPath(currentPath, name)
+    setStatus(`创建文件 ${path} …`)
+    try {
+      await callRpc(rpcConn, 'createEmpty', { cluster: activeCluster(), path })
+      if (await browse()) setStatus(`✔ 已创建文件 ${path}`)
+    } catch (err) {
+      setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
+    }
+  }
+
+  /** 浏览器 File → base64（分块拼接，避免大文件撑爆函数参数栈）。 */
+  function readFileBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(reader.error ?? new Error('读取本地文件失败'))
+      reader.onload = () => {
+        const bytes = new Uint8Array(reader.result as ArrayBuffer)
+        let binary = ''
+        const step = 0x8000
+        for (let i = 0; i < bytes.length; i += step) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + step))
+        }
+        resolve(btoa(binary))
+      }
+      reader.readAsArrayBuffer(file)
+    })
+  }
+
+  /** 上传选中的本地文件到当前目录（逐个上传，失败即停并刷新已成功的部分）。 */
+  async function uploadFiles(): Promise<void> {
+    const files = Array.from(fileInput.files ?? [])
+    fileInput.value = ''
+    if (files.length === 0) return
+    const dir = currentPath
+    let done = 0
+    for (const file of files) {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        await browse(dir)
+        setStatus(`✘ ${file.name} 过大（${fmtBytes(file.size)}，上限 ${fmtBytes(MAX_UPLOAD_BYTES)}）`, true)
+        return
+      }
+      setStatus(`上传 ${file.name}（${done + 1}/${files.length}）…`)
+      try {
+        const base64 = await readFileBase64(file)
+        await callRpc(rpcConn, 'upload', {
+          cluster: activeCluster(),
+          remoteDir: dir,
+          name: file.name,
+          base64,
+          // 协议版本戳：宿主据此判断浏览器端是否还是旧代码（旧版只传空 localPath）。
+          uploadProtocol: 2,
+        })
+        done += 1
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        await browse(dir)
+        setStatus(`✘ 上传 ${file.name} 失败（已成功 ${done} 个）：${message}`, true)
+        return
+      }
+    }
+    if (await browse(dir)) setStatus(`✔ 已上传 ${done} 个文件到 ${dir}`)
+  }
+
+  /** 删除勾选项：走 `delete`，是否进垃圾箱由工具栏开关决定。 */
+  async function deleteSelected(): Promise<void> {
+    const paths = Array.from(selectedPaths)
+    if (paths.length === 0) {
+      setStatus('✘ 请先在表格中勾选要删除的文件或目录', true)
+      return
+    }
+    const trash = trashToggle.checked
+    const tip = trash ? '将移入 HDFS 垃圾箱（可恢复）' : '⚠ 永久删除，跳过垃圾箱'
+    const confirmed = window.confirm(
+      `确定删除以下 ${paths.length} 项？\n\n${paths.join('\n')}\n\n${tip}`,
+    )
+    if (!confirmed) return
+    setStatus(`删除 ${paths.length} 项 …`)
+    try {
+      const value = (await callRpc(rpcConn, 'delete', {
+        cluster: activeCluster(),
+        paths,
+        trash,
+      })) as { removed: number }
+      selectedPaths.clear()
+      if (await browse()) setStatus(`✔ 已删除 ${value.removed} 项`)
     } catch (err) {
       setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
     }
@@ -630,6 +812,11 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   })
   pingBtn.addEventListener('click', () => void ping())
   krbLoginBtn.addEventListener('click', () => void krbLogin())
+  mkdirBtn.addEventListener('click', () => void createFolder())
+  createFileBtn.addEventListener('click', () => void createFile())
+  uploadBtn.addEventListener('click', () => fileInput.click())
+  fileInput.addEventListener('change', () => void uploadFiles())
+  deleteBtn.addEventListener('click', () => void deleteSelected())
   previewClose.addEventListener('click', () => {
     for (const node of [previewTitle, previewBox, previewClose]) node.style.display = 'none'
   })
@@ -650,9 +837,17 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       el('label', { style: 'font-size:12px;cursor:pointer;display:flex;gap:4px;align-items:center;' }, [
         summaryToggle, el('span', { textContent: '目录汇总' }),
       ]),
+    ]),
+    /* 文件操作工具栏（对应旧版 hdfs-gui 的新建目录/新建文件/上传/删除） */
+    el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;' }, [
+      mkdirBtn,
+      createFileBtn,
+      uploadBtn,
+      deleteBtn,
       el('label', { style: 'font-size:12px;cursor:pointer;display:flex;gap:4px;align-items:center;' }, [
         trashToggle, el('span', { textContent: '删除进垃圾箱' }),
       ]),
+      fileInput,
     ]),
     tableWrap,
     previewTitle,
