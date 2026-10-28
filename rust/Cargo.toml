@@ -29,6 +29,16 @@ kerberos-keytab = { version = "0.4.1", package = "awol2005ex3-kerberos-keytab" }
 kerbeiros = { version = "0.4.1", package = "awol2005ex3-kerbeiros" }
 kinit-kt = { version = "0.1.0", package = "awol2005ex3-kinit-kt" }
 
+# 本地 vendored 的 hdfs-native：只改了一处 —— Windows 上优先加载 `gssapi64.dll`
+# （MIT Kerberos for Windows 的真名），`gssapi_krb5.dll` 仅作回退。
+# 原因：Windows 按模块基名去重，若同进程里还有别的插件（dsh-offexplorer 的
+# librdkafka MIT provider）加载 `gssapi64.dll`，两份映像会共享同一套
+# krb5_64.dll / k5sprt64.dll，两遍 GSSAPI 初始化会在 k5_key_register() 里触发
+# MIT krb5 `threads.c` 的 `assert(destructors_set[keynum] == 0)`。
+# 升级 hdfs-native 时务必把 vendor 里的这个补丁带上。
+[patch.crates-io]
+hdfs-native = { path = "vendor/hdfs-native" }
+
 [profile.release]
 lto = true
 codegen-units = 1

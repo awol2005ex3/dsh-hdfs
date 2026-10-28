@@ -637,8 +637,6 @@ dependencies = [
 [[package]]
 name = "hdfs-native"
 version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b4cabd42d46aac490d01b80596dfd930a8316b4ee3e8b0c94a7cba888791c0f"
 dependencies = [
  "aes",
  "base64",

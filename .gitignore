@@ -6,7 +6,7 @@ lib/
 .opencode
 .trae
 .soloncode
-
+.agents
 # Rust native addon
 rust/target/
 rust/index.node

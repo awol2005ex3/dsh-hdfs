@@ -131,6 +131,25 @@ hdfs version / clusters / kerberosLogin / ping / list / read / ...
 面板已加两层防护：打开时对 Kerberos 集群自动登录一次（`ensureKerberos`）；
 GSS 失败时登录按钮变红提示重登。
 
+### 与其它插件共用 MIT GSSAPI：模块基名必须一致（2026-10-28）
+
+Windows 加载器按**基名**去重：`gssapi64.dll` 与 `gssapi_krb5.dll` 会被当成两个模块，
+哪怕字节完全相同。若同进程里另一个插件（dsh-offexplorer 的 librdkafka MIT provider）
+已加载 `gssapi64.dll`，而 hdfs-native 又按 `gssapi_krb5` 加载一份改名副本
+（例如 `D:\setup\gssapi_krb5.dll`），就会出现「两套 gssapi 映像 + 一套共享
+`krb5_64.dll` / `k5sprt64.dll`」：两遍 `gssint_initialize_library()` 在共享的
+k5sprt64 里二次 `k5_key_register()`，触发 MIT krb5 `src/util/support/threads.c`
+的 `assert(destructors_set[keynum] == 0)`，弹窗
+`Assertion failed! File: .\threads.c Line: 334`（KfW 4.1 行号；master 是 335）。
+
+- 现状：`rust/vendor/hdfs-native` 已打补丁——Windows 优先 `gssapi64.dll`，
+  `gssapi_krb5.dll` 仅作回退；通过 `rust/Cargo.toml` 的 `[patch.crates-io]` 生效。
+  **升级 hdfs-native 时必须把补丁带上**，否则双插件同进程必现该弹窗。
+- 校验：`tasklist /m gssapi*` 只应出现一个 gssapi 模块名；`krb5_64.dll`、`k5sprt64.dll` 各一份。
+- 反例（别再干）：把 MIT 的 `gssapi64.dll` 复制/改名为 `gssapi_krb5.dll` 丢 PATH。
+  改名副本就是第二个模块，做硬链接也一样——去重看名字，不看路径和内容。
+- 同理别在插件里 `SetDllDirectory`/改 PATH：那是进程级副作用，会污染别的插件的 DLL 解析。
+
 ### npm 脚本的 napi 选项名
 
 `build:native` 曾误用 `--output`，napi v3 只认 `--output-dir`（`-o`），报
