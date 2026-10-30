@@ -82,6 +82,241 @@ function service(ctx: any, name: string): any {
   }
 }
 
+/* ── ACL 编辑器（对应旧版 hdfs-gui 的 HdfsFileAclsEdit.vue + hdfs_acls.ts） ── */
+
+let aclOverlayEl: HTMLDivElement | null = null
+let aclBoxEl: HTMLDivElement | null = null
+
+/** 进程级单例：ACL 编辑弹窗的遮罩与内容容器（避免每次打开都重建 DOM）。 */
+function ensureAclModal(): { overlay: HTMLDivElement; box: HTMLDivElement } {
+  if (aclOverlayEl && aclBoxEl) return { overlay: aclOverlayEl, box: aclBoxEl }
+  const overlay = el('div', {
+    style: 'position:fixed;inset:0;z-index:2147483647;display:none;background:rgba(0,0,0,.4);',
+  }) as HTMLDivElement
+  const box = el('div', {
+    style: 'color:var(--fg,#1f2328);position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);' +
+      'width:680px;max-width:92vw;max-height:88vh;overflow:auto;padding:16px;background:var(--bg,#fff);' +
+      'border:1px solid rgba(127,127,127,.35);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.3);' +
+      'font-size:13px;line-height:1.5;display:flex;flex-direction:column;gap:10px;',
+  }) as HTMLDivElement
+  overlay.append(box)
+  doc.body.append(overlay)
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.style.display = 'none' })
+  aclOverlayEl = overlay
+  aclBoxEl = box
+  return { overlay, box }
+}
+
+interface AclEntry {
+  rtype: string
+  scope: string
+  permissions: string
+  name?: string | null
+}
+interface AclState {
+  owner: string
+  group: string
+  sticky: boolean
+  permission: number
+  isdir: boolean
+  entries: AclEntry[]
+}
+
+/**
+ * 创建 ACL 编辑器。与 buildPanel 平级的纯 DOM 工厂，返回 `open(path, cluster)`。
+ * 功能对齐旧版：
+ *  - 展示 owner/group/sticky/permission 与 entries 表格；
+ *  - 逐条 Delete（modifyAcl remove=true）；
+ *  - 新增条目（modifyAcl remove=false）；
+ *  - Delete Default（removeAcl onlyDefault=true）/ Delete All（removeAcl onlyDefault=false）。
+ */
+function createAclEditor(conn: any) {
+  function aclSymbolic(permission: number, isdir: boolean): string {
+    return (isdir ? 'd' : '-') + fmtPerm(permission)
+  }
+
+  function open(path: string, cluster: string): void {
+    const { overlay, box } = ensureAclModal()
+    overlay.style.display = 'block'
+    box.textContent = ''
+    const closeBtn = el('button', { type: 'button', textContent: '✕', title: '关闭', style: BTN_CSS + 'float:right;' }) as HTMLButtonElement
+    closeBtn.addEventListener('click', () => { overlay.style.display = 'none' })
+    box.append(
+      el('div', { style: 'font-weight:700;font-size:14px;margin-bottom:2px;padding-right:40px;', textContent: '🔐 ACL：' + path }),
+      closeBtn,
+    )
+    const status = el('div', { style: 'font-size:12.5px;', textContent: '加载 ACL …' })
+    box.append(status)
+
+    let acl: AclState | null = null
+    let showAdd = false
+    const form = { rtype: 'user', scope: 'access', name: '', permissions: '---' }
+
+    const isMaskOther = (): boolean => form.rtype === 'mask' || form.rtype === 'other'
+
+    async function reload(): Promise<void> {
+      status.textContent = '加载 ACL …'
+      status.setAttribute('style', 'font-size:12.5px;')
+      try {
+        const value = (await callRpc(conn, 'getAcl', { cluster, path })) as AclState
+        acl = value
+        render()
+        status.textContent = ''
+      } catch (err) {
+        status.textContent = '✘ ' + (err instanceof Error ? err.message : String(err))
+        status.setAttribute('style', 'font-size:12.5px;' + STATUS_ERR)
+      }
+    }
+
+    function render(): void {
+      while (box.childNodes.length > 2) box.removeChild(box.lastChild as Node)
+      if (!acl) return
+      const desc = el('div', { style: 'display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12.5px;' })
+      const line = (k: string, v: string): void => {
+        desc.append(el('div', { style: 'font-weight:600;', textContent: k }), el('div', { textContent: v }))
+      }
+      line('Owner', acl.owner || '-')
+      line('Group', acl.group || '-')
+      line('Sticky', acl.sticky ? 'true' : 'false')
+      line('Permission', aclSymbolic(acl.permission, acl.isdir))
+      box.append(desc)
+
+      const tbl = el('table', { style: TABLE_CSS })
+      const head = el('tr', {}, ['Type', 'Scope', 'Name', 'Permission', ''].map((t) => el('th', { textContent: t })))
+      for (const th of head.querySelectorAll('th')) th.setAttribute('style', CELL_CSS + 'font-weight:600;')
+      tbl.append(el('thead', {}, [head]))
+      const body = el('tbody')
+      for (const entry of acl.entries) {
+        const del = el('button', { type: 'button', textContent: 'Delete', style: BTN_CSS + 'padding:2px 8px;font-size:12px;color:#cf222e;' }) as HTMLButtonElement
+        del.addEventListener('click', () => void removeOne(entry))
+        body.append(el('tr', {}, [
+          el('td', { textContent: entry.rtype }),
+          el('td', { textContent: entry.scope }),
+          el('td', { textContent: entry.name || '' }),
+          el('td', { textContent: entry.permissions }),
+          el('td', {}, [del]),
+        ]))
+      }
+      for (const tr of body.querySelectorAll('tr')) for (const td of tr.querySelectorAll('td')) td.setAttribute('style', CELL_CSS)
+      box.append(tbl)
+
+      const addBtn = el('button', { type: 'button', textContent: 'Add Acl', style: BTN_PRIMARY_CSS }) as HTMLButtonElement
+      addBtn.addEventListener('click', () => { showAdd = !showAdd; render() })
+      const delDefault = el('button', { type: 'button', textContent: 'Delete Default', style: BTN_CSS + 'color:#cf222e;' }) as HTMLButtonElement
+      delDefault.addEventListener('click', () => void clearAll(true))
+      const delAll = el('button', { type: 'button', textContent: 'Delete All', style: BTN_CSS + 'color:#cf222e;' }) as HTMLButtonElement
+      delAll.addEventListener('click', () => {
+        if (!window.confirm('确定清空 ' + path + ' 的全部 ACL（含 default）？')) return
+        void clearAll(false)
+      })
+      box.append(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [addBtn, delDefault, delAll]))
+      if (showAdd) box.append(buildForm())
+    }
+
+    function buildForm(): HTMLElement {
+      const typeSel = el('select', { style: INPUT_CSS }) as HTMLSelectElement
+      for (const v of ['user', 'group', 'mask', 'other']) typeSel.append(el('option', { value: v, textContent: v }))
+      typeSel.value = form.rtype
+      const scopeSel = el('select', { style: INPUT_CSS }) as HTMLSelectElement
+      for (const v of ['default', 'access']) scopeSel.append(el('option', { value: v, textContent: v }))
+      scopeSel.value = form.scope
+      const nameInput = el('input', { type: 'text', style: INPUT_CSS, placeholder: '可选' }) as HTMLInputElement
+      nameInput.value = form.name
+      const permSel = el('select', { style: INPUT_CSS }) as HTMLSelectElement
+      for (const v of ['---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx']) permSel.append(el('option', { value: v, textContent: v }))
+      permSel.value = form.permissions
+
+      const nameRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:4px;' }, [
+        el('span', { style: 'width:90px;font-weight:600;', textContent: 'Name' }),
+        nameInput,
+      ])
+      const permRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:4px;' }, [
+        el('span', { style: 'width:90px;font-weight:600;', textContent: 'Permission' }),
+        permSel,
+      ])
+      const sync = (): void => {
+        form.rtype = typeSel.value
+        form.scope = scopeSel.value
+        form.name = nameInput.value.trim()
+        form.permissions = permSel.value
+        const hide = isMaskOther()
+        nameRow.style.display = hide ? 'none' : ''
+        permRow.style.display = hide ? 'none' : ''
+      }
+      typeSel.addEventListener('change', sync)
+      scopeSel.addEventListener('change', sync)
+
+      const confirmBtn = el('button', { type: 'button', textContent: 'Confirm', style: BTN_PRIMARY_CSS }) as HTMLButtonElement
+      confirmBtn.addEventListener('click', () => void add())
+      const cancelBtn = el('button', { type: 'button', textContent: 'Cancel', style: BTN_CSS }) as HTMLButtonElement
+      cancelBtn.addEventListener('click', () => { showAdd = false; render() })
+      const panel = el('div', { style: 'border:1px solid rgba(127,127,127,.3);border-radius:8px;padding:10px;margin-top:8px;display:flex;flex-direction:column;gap:4px;' }, [
+        el('div', { style: 'font-weight:600;', textContent: '新增 ACL 条目' }),
+        el('div', { style: 'display:flex;gap:8px;align-items:center;' }, [
+          el('span', { style: 'width:90px;font-weight:600;', textContent: 'Type' }), typeSel,
+          el('span', { style: 'width:90px;font-weight:600;', textContent: 'Scope' }), scopeSel,
+        ]),
+        nameRow,
+        permRow,
+        el('div', { style: 'display:flex;gap:8px;margin-top:6px;' }, [confirmBtn, cancelBtn]),
+      ])
+      sync()
+      return panel
+    }
+
+    async function add(): Promise<void> {
+      const entry: AclEntry = {
+        rtype: form.rtype,
+        scope: form.scope,
+        permissions: isMaskOther() ? '' : form.permissions,
+        ...(isMaskOther() ? {} : form.name ? { name: form.name } : {}),
+      }
+      status.textContent = '添加 ACL …'
+      status.setAttribute('style', 'font-size:12.5px;')
+      try {
+        await callRpc(conn, 'modifyAcl', { cluster, path, entries: [entry], remove: false })
+        showAdd = false
+        await reload()
+      } catch (err) {
+        status.textContent = '✘ ' + (err instanceof Error ? err.message : String(err))
+        status.setAttribute('style', 'font-size:12.5px;' + STATUS_ERR)
+      }
+    }
+
+    async function removeOne(entry: AclEntry): Promise<void> {
+      status.textContent = '删除 ACL …'
+      status.setAttribute('style', 'font-size:12.5px;')
+      try {
+        await callRpc(conn, 'modifyAcl', {
+          cluster, path,
+          entries: [{ rtype: entry.rtype, scope: entry.scope, permissions: entry.permissions, ...(entry.name ? { name: entry.name } : {}) }],
+          remove: true,
+        })
+        await reload()
+      } catch (err) {
+        status.textContent = '✘ ' + (err instanceof Error ? err.message : String(err))
+        status.setAttribute('style', 'font-size:12.5px;' + STATUS_ERR)
+      }
+    }
+
+    async function clearAll(onlyDefault: boolean): Promise<void> {
+      status.textContent = onlyDefault ? '删除 default ACL …' : '删除全部 ACL …'
+      status.setAttribute('style', 'font-size:12.5px;')
+      try {
+        await callRpc(conn, 'removeAcl', { cluster, path, onlyDefault })
+        await reload()
+      } catch (err) {
+        status.textContent = '✘ ' + (err instanceof Error ? err.message : String(err))
+        status.setAttribute('style', 'font-size:12.5px;' + STATUS_ERR)
+      }
+    }
+
+    void reload()
+  }
+
+  return { open }
+}
+
 /* ── RPC ──────────────────────────────────────────────────────────────── */
 
 interface RpcResponse {
@@ -334,6 +569,8 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   const selectedPaths = new Set<string>()
   /** 当前表头的全选框（重渲染时重建）。 */
   let selectAllBox: HTMLInputElement | null = null
+  /** ACL 编辑器实例（模块级工厂，按当前 rpcConn 创建一次）。 */
+  const aclEditor = createAclEditor(rpcConn)
 
   /** 当前集群 id（下拉选择优先，缺省用 defaultCluster）。 */
   function activeCluster(): string {
@@ -529,6 +766,13 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         if (f.isdir) void browse(f.path)
         else void preview(f.path)
       })
+      const aclBtn = el('button', {
+        type: 'button',
+        textContent: 'ACL',
+        title: '查看 / 编辑 ACL',
+        style: BTN_CSS + 'padding:2px 8px;font-size:12px;margin-left:4px;',
+      }) as HTMLButtonElement
+      aclBtn.addEventListener('click', () => aclEditor.open(f.path, activeCluster()))
       const checkbox = el('input', { type: 'checkbox' }) as HTMLInputElement
       checkbox.checked = selectedPaths.has(f.path)
       checkbox.title = `选择 ${f.name}`
@@ -545,7 +789,7 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
         el('td', { textContent: f.owner ? `${f.owner}:${f.group}` : '-' }),
         el('td', { textContent: f.isdir ? (f.spaceConsumed != null ? fmtBytes(f.spaceConsumed) : '-') : fmtBytes(f.length) }),
         el('td', { textContent: fmtTime(f.modificationTime) }),
-        el('td', {}, [openBtn]),
+        el('td', {}, [openBtn, aclBtn]),
       ])
       for (const td of tr.querySelectorAll('td')) td.setAttribute('style', CELL_CSS)
       tbody.append(tr)
