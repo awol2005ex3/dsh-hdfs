@@ -25,6 +25,10 @@ const EXPECTED = [
   'uploadFile', 'downloadFile', 'deletePaths', 'mkdirs', 'createEmptyFile',
   'renamePath', 'setPermission', 'getAclStatus', 'modifyAclEntries', 'removeAcl',
   'findSpecialDirs', 'ping',
+  // 结构化文件预览（ORC / Parquet / Avro）
+  'orcFileMeta', 'orcFileFields', 'orcReadPage', 'orcExportCsv',
+  'parquetFileMeta', 'parquetFileFields', 'parquetReadPage', 'parquetExportCsv',
+  'avroRead',
 ]
 
 for (const fn of EXPECTED) {

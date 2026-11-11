@@ -17,6 +17,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 mod kerberos;
+mod preview;
 mod types;
 
 use crate::kerberos::{kerberos_login, kerberos_status};
@@ -58,8 +59,7 @@ fn parse_extra(raw: &str) -> HashMap<String, String> {
 ///
 /// hdfs-native 读取用户名只认 `HADOOP_USER_NAME` 环境变量，所以这里在解析后统一
 /// 回写进去，保证 Kerberos / 非 Kerberos 两条路径都能生效。
-fn build_client(config: &HdfsConfig) -> std::result::Result<Client, String> {
-    let other_config = parse_extra(&config.extra_config);
+pub(crate) fn build_client(config: &HdfsConfig) -> std::result::Result<Client, String> {    let other_config = parse_extra(&config.extra_config);
     let url = config.url.trim();
     if url.is_empty() {
         return Err("hdfs url 未配置".into());
@@ -241,6 +241,63 @@ pub async fn read_file(config: HdfsConfig, path: String, max_bytes: i64) -> Resu
         isparquet: buf.starts_with(b"PAR1"),
         isavro: normalized.ends_with(".avro"),
     })
+}
+
+// ── 结构化文件预览（ORC / Parquet / Avro），实现在 preview.rs ─────────────────
+// 复杂结构一律序列化成 JSON 字符串返回，规避 napi 复杂类型转换坑。
+
+/// ORC 文件元信息：`{"total":行数,"compression":"压缩类型"}`。
+#[napi]
+pub async fn orc_file_meta(config: HdfsConfig, path: String) -> Result<String> {
+    preview::orc_meta(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// ORC 字段列表：`[{"name":..,"type":..},..]`。
+#[napi]
+pub async fn orc_file_fields(config: HdfsConfig, path: String) -> Result<String> {
+    preview::orc_fields(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// ORC 分页读取（`page` 从 1 开始）：返回 JSON 行数组字符串。
+#[napi]
+pub async fn orc_read_page(config: HdfsConfig, path: String, page_size: i64, page: i64) -> Result<String> {
+    preview::orc_page(&config, &path, page_size, page).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// ORC 全表导出为 CSV 文本。
+#[napi]
+pub async fn orc_export_csv(config: HdfsConfig, path: String) -> Result<String> {
+    preview::orc_export_csv(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// Parquet 文件元信息：`{"total":行数,"compression":"压缩类型"}`。
+#[napi]
+pub async fn parquet_file_meta(config: HdfsConfig, path: String) -> Result<String> {
+    preview::parquet_meta(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// Parquet 字段列表：`[{"name":..,"type":..},..]`。
+#[napi]
+pub async fn parquet_file_fields(config: HdfsConfig, path: String) -> Result<String> {
+    preview::parquet_fields(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// Parquet 分页读取（`page` 从 1 开始）：返回 JSON 行数组字符串。
+#[napi]
+pub async fn parquet_read_page(config: HdfsConfig, path: String, page_size: i64, page: i64) -> Result<String> {
+    preview::parquet_page(&config, &path, page_size, page).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// Parquet 全表导出为 CSV 文本。
+#[napi]
+pub async fn parquet_export_csv(config: HdfsConfig, path: String) -> Result<String> {
+    preview::parquet_export_csv(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
+}
+
+/// Avro 全量读取：返回 JSON 数组字符串（每条记录一个对象）。
+#[napi]
+pub async fn avro_read(config: HdfsConfig, path: String) -> Result<String> {
+    preview::avro_read(&config, &path).await.map_err(|e| Error::new(Status::GenericFailure, e))
 }
 
 /// 写文本到 HDFS（覆盖写）。
@@ -691,7 +748,7 @@ pub async fn ping(config: HdfsConfig) -> Result<bool> {
 // ── 内部工具 ────────────────────────────────────────────────────────────────
 
 /// 规范化 HDFS 路径：统一分隔符、保证以 `/` 开头、去掉尾部 `/`（根目录除外）。
-fn normalize_path(raw: &str) -> String {
+pub(crate) fn normalize_path(raw: &str) -> String {
     let p = raw.replace('\\', "/");
     if p.is_empty() {
         return "/".to_string();

@@ -133,4 +133,14 @@ export interface DshHdfsNative {
     showContentSummary: boolean,
   ): Promise<FindDirsResult>
   ping(config: HdfsConfig): Promise<boolean>
+  // 结构化文件预览（ORC / Parquet / Avro）：复杂结构一律返回 JSON 字符串
+  orcFileMeta(config: HdfsConfig, path: string): Promise<string>
+  orcFileFields(config: HdfsConfig, path: string): Promise<string>
+  orcReadPage(config: HdfsConfig, path: string, pageSize: number, page: number): Promise<string>
+  orcExportCsv(config: HdfsConfig, path: string): Promise<string>
+  parquetFileMeta(config: HdfsConfig, path: string): Promise<string>
+  parquetFileFields(config: HdfsConfig, path: string): Promise<string>
+  parquetReadPage(config: HdfsConfig, path: string, pageSize: number, page: number): Promise<string>
+  parquetExportCsv(config: HdfsConfig, path: string): Promise<string>
+  avroRead(config: HdfsConfig, path: string): Promise<string>
 }

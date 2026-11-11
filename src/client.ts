@@ -544,9 +544,47 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   const fileTable = el('table', { style: TABLE_CSS })
   tableWrap.append(fileTable)
 
-  const previewBox = el('pre', { style: PREVIEW_CSS + 'display:none;' })
-  const previewTitle = el('div', { style: 'font-weight:600;display:none;' })
-  const previewClose = el('button', { type: 'button', textContent: '✕ 关闭预览', style: BTN_CSS + 'display:none;' }) as HTMLButtonElement
+  const previewBox = el('pre', { style: PREVIEW_CSS + 'flex:1;min-height:0;max-height:none;display:none;' })
+  const previewTitle = el('div', { style: 'font-weight:600;flex:0 0 auto;display:none;' })
+  const previewClose = el('button', { type: 'button', textContent: '✕ 关闭预览', style: BTN_CSS + 'flex:0 0 auto;' }) as HTMLButtonElement
+  /* 结构化预览容器（ORC/Parquet 分页表格 / Avro JSON / HTML iframe）。
+     仅在对应模式显示；previewBox 保留用于纯文本与 Avro JSON 文本兜底。 */
+  const previewTableWrap = el('div', { style: 'overflow:auto;flex:1;min-height:0;display:none;' })
+  const previewTable = el('table', { style: TABLE_CSS })
+  previewTableWrap.append(previewTable)
+  const previewPager = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:0 0 auto;display:none;' })
+  const previewActions = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:0 0 auto;display:none;' })
+  /* HTML 预览：sandbox 隔离（仅放开脚本，不给 allow-same-origin），透明源无法访问宿主。 */
+  const previewFrame = el('iframe', {
+    title: 'HTML Preview',
+    style: 'display:none;flex:1;min-height:0;width:100%;border:1px solid rgba(127,127,127,.3);border-radius:6px;background:#fff;',
+  }) as HTMLIFrameElement
+  previewFrame.setAttribute('sandbox', 'allow-scripts')
+  const previewExtra = el('div', { style: 'font-size:12px;color:var(--fg-muted,#57606a);flex:0 0 auto;display:none;' })
+
+  /* 预览浮层：遮罩 + 居中弹窗，避免预览内容沉到长页面底部。 */
+  const previewDialog = el('div', {
+    style: 'display:flex;flex-direction:column;gap:8px;width:min(960px,92vw);height:min(82vh,900px);' +
+      'padding:14px;box-sizing:border-box;background:var(--bg,#fff);color:inherit;' +
+      'border:1px solid rgba(127,127,127,.35);border-radius:10px;' +
+      'box-shadow:0 12px 40px rgba(0,0,0,.28);',
+  })
+  const previewOverlay = el('div', {
+    style: 'display:none;position:fixed;inset:0;z-index:2147483646;' +
+      'background:rgba(0,0,0,.45);align-items:center;justify-content:center;',
+  }, [previewDialog])
+  previewOverlay.id = 'dsh-hdfs-preview-overlay'
+  previewOverlay.addEventListener('click', (ev) => {
+    // 点遮罩空白处关闭；点弹窗内部不关闭
+    if (ev.target === previewOverlay) previewClose.click()
+  })
+  // Esc 关闭（只在浮层可见时拦截，避免影响面板内其它快捷键）
+  previewOverlay.addEventListener('keydown', (ev) => {
+    if ((ev as KeyboardEvent).key === 'Escape') {
+      ev.stopPropagation()
+      previewClose.click()
+    }
+  })
 
   const krbStatus = el('span', { style: 'font-size:12px;', textContent: '' })
   const krbLoginBtn = el('button', { type: 'button', textContent: '🔑 Kerberos 登录', style: BTN_CSS }) as HTMLButtonElement
@@ -808,18 +846,222 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     }
   }
 
+  /** 隐藏全部结构化预览容器（切换模式前调用，避免上一模式的残留）。 */
+  function hidePreviewPanes(): void {
+    for (const node of [previewTableWrap, previewPager, previewActions, previewFrame, previewBox, previewExtra]) {
+      node.style.display = 'none'
+    }
+  }
+
+  /** 打开预览浮层并重置标题。 */
+  function showPreviewOverlay(title: string): void {
+    previewTitle.textContent = title
+    for (const node of [previewTitle, previewClose]) node.style.display = ''
+    hidePreviewPanes()
+    previewOverlay.style.display = 'flex'
+    // 浮层用 position:fixed，挂到 body 下最稳（不受面板 overflow 裁剪）。
+    if (previewOverlay.parentElement !== doc.body) doc.body.append(previewOverlay)
+    previewOverlay.tabIndex = -1
+    previewOverlay.focus({ preventScroll: true })
+  }
+
+  /** ORC / Parquet 结构化预览（元信息 + 字段 + 分页表格 + 导出 CSV）。 */
+  async function previewColumnar(
+    path: string,
+    kind: 'orc' | 'parquet',
+  ): Promise<void> {
+    const metaEndpoint = kind === 'orc' ? 'orcMeta' : 'parquetMeta'
+    const fieldsEndpoint = kind === 'orc' ? 'orcFields' : 'parquetFields'
+    const pageEndpoint = kind === 'orc' ? 'orcPage' : 'parquetPage'
+    const csvEndpoint = kind === 'orc' ? 'orcExportCsv' : 'parquetExportCsv'
+    const cluster = activeCluster()
+    const args = { cluster, path }
+
+    const [metaValue, fieldsValue] = await Promise.all([
+      callRpc(rpcConn, metaEndpoint, args) as Promise<{ meta: string }>,
+      callRpc(rpcConn, fieldsEndpoint, args) as Promise<{ fields: string }>,
+    ])
+    const meta = JSON.parse(metaValue.meta || '{}') as { total?: number; compression?: string }
+    const fields = JSON.parse(fieldsValue.fields || '[]') as Array<{ name: string; type: string }>
+
+    let pageSize = 20
+    let page = 1
+    const total = meta.total ?? 0
+    const compression = meta.compression || ''
+
+    /* 操作行：struct 按钮 + 导出 CSV */
+    previewActions.textContent = ''
+    const structBtn = el('button', { type: 'button', textContent: 'show struct', style: BTN_CSS }) as HTMLButtonElement
+    structBtn.addEventListener('click', () => {
+      previewExtra.textContent = JSON.stringify(fields, null, 2)
+      previewExtra.style.display = previewExtra.style.display === 'none' ? '' : 'none'
+    })
+    const csvBtn = el('button', { type: 'button', textContent: 'export to csv', style: BTN_CSS }) as HTMLButtonElement
+    csvBtn.addEventListener('click', () => void exportCsv(csvEndpoint, path, cluster))
+    previewActions.append(structBtn, csvBtn)
+    previewActions.style.display = ''
+
+    /* 分页控件 */
+    const pageSizeSel = el('select', { style: INPUT_CSS + 'width:auto;' }) as HTMLSelectElement
+    for (const size of [10, 20, 50, 100, 200]) {
+      const opt = el('option', { value: String(size), textContent: `${size} 行/页` })
+      pageSizeSel.append(opt)
+    }
+    pageSizeSel.value = String(pageSize)
+    const prevBtn = el('button', { type: 'button', textContent: '‹ 上一页', style: BTN_CSS }) as HTMLButtonElement
+    const nextBtn = el('button', { type: 'button', textContent: '下一页 ›', style: BTN_CSS }) as HTMLButtonElement
+    const pageInfo = el('span', { style: 'font-size:12.5px;' })
+    const renderPager = (): void => {
+      const maxPage = Math.max(1, Math.ceil(total / pageSize))
+      pageInfo.textContent = `第 ${page} / ${maxPage} 页 · 共 ${total} 行`
+      prevBtn.disabled = page <= 1
+      nextBtn.disabled = page >= maxPage
+    }
+    pageSizeSel.addEventListener('change', () => {
+      pageSize = parseInt(pageSizeSel.value, 10) || 20
+      page = 1
+      void loadPage()
+    })
+    prevBtn.addEventListener('click', () => {
+      if (page > 1) { page -= 1; void loadPage() }
+    })
+    nextBtn.addEventListener('click', () => {
+      if (page < Math.max(1, Math.ceil(total / pageSize))) { page += 1; void loadPage() }
+    })
+    previewPager.append(prevBtn, pageInfo, nextBtn, pageSizeSel)
+    previewPager.style.display = ''
+
+    /** 加载并渲染当前页数据。 */
+    async function loadPage(): Promise<void> {
+      renderPager()
+      setStatus(`读取 ${path} 第 ${page} 页 …`)
+      const value = (await callRpc(rpcConn, pageEndpoint, {
+        ...args, pageSize, page,
+      })) as { rows: string }
+      const rows = JSON.parse(value.rows || '[]') as Array<Record<string, unknown>>
+      renderColumnarTable(fields, rows, page, pageSize)
+      setStatus(`✔ ${path}（${total} 行 · ${compression || '无压缩'}）`)
+    }
+
+    hidePreviewPanes()
+    showPreviewOverlay(`${path}（${kind.toUpperCase()} · ${total} 行${compression ? ` · ${compression}` : ''}）`)
+    previewActions.style.display = ''
+    previewPager.style.display = ''
+    await loadPage()
+  }
+
+  /** 渲染 ORC/Parquet 分页表格。 */
+  function renderColumnarTable(
+    fields: Array<{ name: string; type: string }>,
+    rows: Array<Record<string, unknown>>,
+    page: number,
+    pageSize: number,
+  ): void {
+    previewTable.textContent = ''
+    const headerRow = el('tr')
+    headerRow.append(el('th', { textContent: '__rowindex', style: CELL_CSS }))
+    for (const f of fields) {
+      const th = el('th', { textContent: f.name, title: f.type, style: CELL_CSS })
+      headerRow.append(th)
+    }
+    previewTable.append(el('thead', {}, [headerRow]))
+    const tbody = el('tbody')
+    for (const [i, row] of rows.entries()) {
+      const tr = el('tr', {}, [
+        el('td', { textContent: String(i + 1 + pageSize * (page - 1)) }),
+        ...fields.map((f) => el('td', { textContent: cellText(row[f.name]) })),
+      ])
+      for (const td of tr.querySelectorAll('td')) td.setAttribute('style', CELL_CSS)
+      tbody.append(tr)
+    }
+    previewTable.append(tbody)
+    previewTableWrap.style.display = ''
+  }
+
+  /** 单元格取值展示：字符串原样，其余 JSON 序列化，null/undefined 留空。 */
+  function cellText(v: unknown): string {
+    if (v === null || v === undefined) return ''
+    if (typeof v === 'string') return v
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+    try { return JSON.stringify(v) } catch { return String(v) }
+  }
+
+  /** 导出 CSV：返回 CSV 文本，触发浏览器下载。 */
+  async function exportCsv(endpoint: string, path: string, cluster: string): Promise<void> {
+    setStatus(`导出 ${path} …`)
+    try {
+      const value = (await callRpc(rpcConn, endpoint, { cluster, path })) as { csv: string }
+      const name = path.split('/').filter(Boolean).pop() || 'export'
+      const blob = new Blob([value.csv || ''], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = el('a', { href: url }) as HTMLAnchorElement
+      a.download = `${name}.csv`
+      doc.body.append(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setStatus(`✔ 已导出 ${name}.csv`)
+    } catch (err) {
+      setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
+    }
+  }
+
+  /** Avro 预览：解析成 JSON 展示。 */
+  async function previewAvro(path: string): Promise<void> {
+    showPreviewOverlay(`${path}（Avro · 读取中…）`)
+    const value = (await callRpc(rpcConn, 'avroRead', { cluster: activeCluster(), path })) as { records: string }
+    const records = JSON.parse(value.records || '[]')
+    previewTitle.textContent = `${path}（Avro · ${Array.isArray(records) ? records.length : 0} 条）`
+    previewBox.textContent = JSON.stringify(records, null, 2)
+    previewBox.style.display = ''
+    setStatus(`✔ 已解析 ${path}`)
+  }
+
+  /** HTML 预览：读全文后渲染进 sandbox iframe（透明源，无法访问宿主）。 */
+  async function previewHtml(path: string): Promise<void> {
+    showPreviewOverlay(`${path}（HTML · 读取中…）`)
+    setStatus(`读取 ${path} …`)
+    const value = (await callRpc(rpcConn, 'read', {
+      cluster: activeCluster(), path, maxBytes: 0,
+    })) as { length: number; content: string }
+    previewTitle.textContent = `${path}（HTML · ${fmtBytes(value.length)}）`
+    previewFrame.setAttribute('srcdoc', value.content || '')
+    previewFrame.style.display = ''
+    previewExtra.textContent = 'HTML 以沙箱 iframe 渲染（允许脚本、禁止访问宿主）；如需源码请用下载或 read。'
+    previewExtra.style.display = ''
+    setStatus(`✔ 已渲染 ${path}`)
+  }
+
   async function preview(path: string): Promise<void> {
+    const lower = path.toLowerCase()
     setStatus(`读取 ${path} …`)
     try {
+      if (lower.endsWith('.orc')) {
+        await previewColumnar(path, 'orc')
+        return
+      }
+      if (lower.endsWith('.parquet')) {
+        await previewColumnar(path, 'parquet')
+        return
+      }
+      if (lower.endsWith('.avro')) {
+        await previewAvro(path)
+        return
+      }
+      if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+        await previewHtml(path)
+        return
+      }
+      // 其它类型：沿用纯文本预览
       const value = (await callRpc(rpcConn, 'read', {
         cluster: activeCluster(),
         path,
         maxBytes: 256 * 1024,
       })) as { length: number; content: string; isorc: boolean; isparquet: boolean; isavro: boolean }
       const tags = [value.isorc && 'ORC', value.isparquet && 'Parquet', value.isavro && 'Avro'].filter(Boolean).join('/')
-      previewTitle.textContent = `${path}（${fmtBytes(value.length)}${tags ? ` · ${tags}` : ''}）`
+      showPreviewOverlay(`${path}（${fmtBytes(value.length)}${tags ? ` · ${tags}` : ''}）`)
       previewBox.textContent = value.content || '(空文件或二进制内容)'
-      for (const node of [previewTitle, previewBox, previewClose]) node.style.display = ''
+      previewBox.style.display = ''
       setStatus(`✔ 已读取 ${path}`)
     } catch (err) {
       setStatus(`✘ ${err instanceof Error ? err.message : String(err)}`, true)
@@ -1062,7 +1304,12 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   fileInput.addEventListener('change', () => void uploadFiles())
   deleteBtn.addEventListener('click', () => void deleteSelected())
   previewClose.addEventListener('click', () => {
-    for (const node of [previewTitle, previewBox, previewClose]) node.style.display = 'none'
+    for (const node of [previewTitle, previewBox, previewTableWrap, previewPager, previewActions, previewFrame, previewExtra]) {
+      node.style.display = 'none'
+    }
+    previewOverlay.style.display = 'none'
+    // 断开 iframe，停掉 HDFS 文件里脚本/媒体在关闭后的后台行为。
+    previewFrame.removeAttribute('srcdoc')
   })
 
   const browseZone = el('div', { id: 'dsh-hdfs-browse-zone' }, [
@@ -1094,9 +1341,6 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
       fileInput,
     ]),
     tableWrap,
-    previewTitle,
-    previewBox,
-    previewClose,
   ])
 
   const configZone = el('div', {

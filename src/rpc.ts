@@ -64,6 +64,16 @@ export const RPC_ENDPOINTS = [
   'kerberosStatus',
   'upload',
   'download',
+  // 结构化文件预览（ORC / Parquet / Avro）
+  'orcMeta',
+  'orcFields',
+  'orcPage',
+  'orcExportCsv',
+  'parquetMeta',
+  'parquetFields',
+  'parquetPage',
+  'parquetExportCsv',
+  'avroRead',
 ] as const
 
 export type RpcEndpoint = (typeof RPC_ENDPOINTS)[number]
@@ -338,6 +348,48 @@ export function createRpcDispatcher(
           if (!localDir) throw new Error('localDir 不能为空')
           return ok({ path: await native.downloadFile(config, remote, localDir) })
         }
+
+        // 结构化文件预览
+        case 'orcMeta':
+          return ok({ meta: await native.orcFileMeta(config, str(args, 'path')) })
+
+        case 'orcFields':
+          return ok({ fields: await native.orcFileFields(config, str(args, 'path')) })
+
+        case 'orcPage':
+          return ok({
+            rows: await native.orcReadPage(
+              config,
+              str(args, 'path'),
+              Math.max(1, Math.floor(num(args, 'pageSize', 20))),
+              Math.max(1, Math.floor(num(args, 'page', 1))),
+            ),
+          })
+
+        case 'orcExportCsv':
+          return ok({ csv: await native.orcExportCsv(config, str(args, 'path')) })
+
+        case 'parquetMeta':
+          return ok({ meta: await native.parquetFileMeta(config, str(args, 'path')) })
+
+        case 'parquetFields':
+          return ok({ fields: await native.parquetFileFields(config, str(args, 'path')) })
+
+        case 'parquetPage':
+          return ok({
+            rows: await native.parquetReadPage(
+              config,
+              str(args, 'path'),
+              Math.max(1, Math.floor(num(args, 'pageSize', 20))),
+              Math.max(1, Math.floor(num(args, 'page', 1))),
+            ),
+          })
+
+        case 'parquetExportCsv':
+          return ok({ csv: await native.parquetExportCsv(config, str(args, 'path')) })
+
+        case 'avroRead':
+          return ok({ records: await native.avroRead(config, str(args, 'path')) })
 
         default:
           return failure(new Error(`unknown endpoint ${endpoint}`))

@@ -7,6 +7,8 @@ import { pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const pluginUrl = new URL('../lib/index.js', import.meta.url)
+// 端点总数由 RPC_ENDPOINTS 驱动，新增端点后无需再改这条断言。
+const { RPC_ENDPOINTS } = await import(new URL('../lib/rpc.js', import.meta.url).href)
 
 const failures = []
 const check = (label, cond) => {
@@ -92,7 +94,8 @@ try {
   process.exit(1)
 }
 
-check('注册了 20 条 /api/hdfs/* 路由', registeredRoutes.length === 20)
+check(`注册了 ${RPC_ENDPOINTS.length} 条 /api/hdfs/* 路由`,
+  registeredRoutes.length === RPC_ENDPOINTS.length)
 check('路由全部在 /api 下', registeredRoutes.every((r) => r.path.startsWith('/api/hdfs/')))
 check('路由全部 POST + buffered', registeredRoutes.every((r) => r.methods.length === 1 && r.methods[0] === 'POST' && r.requestBody === 'buffered'))
 check('注册了 1 个 hdfs 工具', registeredTools.length === 1 && registeredTools[0].name === 'hdfs')

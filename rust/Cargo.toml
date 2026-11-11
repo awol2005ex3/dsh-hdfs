@@ -13,11 +13,22 @@ crate-type = ["cdylib"]
 napi = { version = "3", features = ["napi8", "tokio_rt"] }
 napi-derive = { version = "3" }
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 futures-util = "0.3"
 bytes = "1"
 hdfs-native = "0.11.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# 结构化文件预览（ORC / Parquet / Avro），与 hdfs-gui 原版同版本，确保行为一致。
+# - orc-rust 默认启用 async feature，通过 AsyncChunkReader 适配 hdfs-native 的 FileReader。
+# - arrow 需要 chrono-tz（时间类型）与 prettyprint（原版依赖项）。
+# - parquet 的 async feature 提供 AsyncFileReader / MetadataFetch 异步读取 trait。
+# - apache-avro 把容器文件解析成 serde_json::Value。
+orc-rust = "=0.6.0"
+arrow = { version = "=53.3.0", features = ["prettyprint", "chrono-tz"] }
+parquet = { version = "=53.3.0", features = ["async"] }
+apache-avro = "0.17.0"
 
 # Kerberos: 纯 Rust 实现，免 MIT kinit / 系统 gssapi。
 # hdfs-native 的 SASL/GSS 走 libloading 加载 libgssapi_krb5（Windows 上找不到），
