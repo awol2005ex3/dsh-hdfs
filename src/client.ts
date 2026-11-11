@@ -546,7 +546,7 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
 
   const previewBox = el('pre', { style: PREVIEW_CSS + 'flex:1;min-height:0;max-height:none;display:none;' })
   const previewTitle = el('div', { style: 'font-weight:600;flex:0 0 auto;display:none;' })
-  const previewClose = el('button', { type: 'button', textContent: '✕ 关闭预览', style: BTN_CSS + 'flex:0 0 auto;' }) as HTMLButtonElement
+  const previewClose = el('button', { type: 'button', textContent: '✕ 关闭预览', style: BTN_CSS + 'flex:0 0 auto;margin-left:auto;' }) as HTMLButtonElement
   /* 结构化预览容器（ORC/Parquet 分页表格 / Avro JSON / HTML iframe）。
      仅在对应模式显示；previewBox 保留用于纯文本与 Avro JSON 文本兜底。 */
   const previewTableWrap = el('div', { style: 'overflow:auto;flex:1;min-height:0;display:none;' })
@@ -562,13 +562,27 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
   previewFrame.setAttribute('sandbox', 'allow-scripts')
   const previewExtra = el('div', { style: 'font-size:12px;color:var(--fg-muted,#57606a);flex:0 0 auto;display:none;' })
 
-  /* 预览浮层：遮罩 + 居中弹窗，避免预览内容沉到长页面底部。 */
+  /* 预览浮层：遮罩 + 居中弹窗，避免预览内容沉到长页面底部。
+     在弹窗上就地定义一套固定浅色变量：内部按钮/文本/表格大量使用
+     var(--bg)/var(--fg)/var(--fg-muted)，若继承宿主主题会在深色主题下
+     变成「白底白字」而看似空白。这里把变量钉成浅色，保证任何主题下可读。 */
   const previewDialog = el('div', {
     style: 'display:flex;flex-direction:column;gap:8px;width:min(960px,92vw);height:min(82vh,900px);' +
-      'padding:14px;box-sizing:border-box;background:var(--bg,#fff);color:inherit;' +
+      'padding:14px;box-sizing:border-box;' +
+      '--bg:#fff;--fg:#1f2328;--fg-muted:#57606a;' +
+      'background:#fff;color:#1f2328;' +
       'border:1px solid rgba(127,127,127,.35);border-radius:10px;' +
       'box-shadow:0 12px 40px rgba(0,0,0,.28);',
-  })
+  }, [
+    /* 顶栏：标题 + 关闭按钮 */
+    el('div', { style: 'display:flex;align-items:center;gap:8px;flex:0 0 auto;' }, [previewTitle, previewClose]),
+    previewExtra,
+    previewActions,
+    previewTableWrap,
+    previewPager,
+    previewFrame,
+    previewBox,
+  ])
   const previewOverlay = el('div', {
     style: 'display:none;position:fixed;inset:0;z-index:2147483646;' +
       'background:rgba(0,0,0,.45);align-items:center;justify-content:center;',
@@ -928,6 +942,9 @@ function buildPanel(channel: SettingsChannel, rpcConn: any): PanelHandle {
     nextBtn.addEventListener('click', () => {
       if (page < Math.max(1, Math.ceil(total / pageSize))) { page += 1; void loadPage() }
     })
+    // 先清空再追加：每次进入预览都会新建一套 pager 控件，
+    // 不清空会导致重复点「预览」时往容器里累积多套分页条。
+    previewPager.textContent = ''
     previewPager.append(prevBtn, pageInfo, nextBtn, pageSizeSel)
     previewPager.style.display = ''
 
